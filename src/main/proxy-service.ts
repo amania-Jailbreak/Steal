@@ -118,6 +118,7 @@ export class ProxyService extends EventEmitter {
 
       void sourceAppLookup.then((sourceApp) => {
         const capture = ctx.stealCapture as CapturedExchange
+        if (sourceApp.isStealChrome) capture.source = 'browser'
         capture.sourceAppName = sourceApp.name || capture.sourceAppName
         capture.sourceProcessId = sourceApp.pid
       }).finally(callback)
@@ -144,9 +145,10 @@ export class ProxyService extends EventEmitter {
       ctx.onResponseEnd((_ctx: ProxyContext, done: (error?: Error) => void) => {
         void (async () => {
         const capture = ctx.stealCapture as CapturedExchange
-        const sourceApp = await (ctx.stealSourceAppLookup as Promise<{ name?: string; pid?: number }>)
+        const sourceApp = await (ctx.stealSourceAppLookup as Promise<{ name?: string; pid?: number; isStealChrome?: boolean }>)
         const requestBody = Buffer.concat(requestChunks)
         const responseBody = Buffer.concat(responseChunks)
+        if (sourceApp.isStealChrome) capture.source = 'browser'
         capture.sourceAppName = sourceApp.name || capture.sourceAppName
         capture.sourceProcessId = sourceApp.pid
         capture.durationMs = Date.now() - startedAtMs

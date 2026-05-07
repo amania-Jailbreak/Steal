@@ -84,7 +84,7 @@ async function findClientProcess(clientPort, proxyPort) {
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   try {
     const { stdout } = await execFileAsync$1("lsof", ["-nP", `-iTCP:${proxyPort}`, "-sTCP:ESTABLISHED"]);
-    const value = parseLsof(stdout, clientPort, proxyPort);
+    const value = await resolveStealChrome(parseLsof(stdout, clientPort, proxyPort));
     cache.set(key, { value, expiresAt: Date.now() + cacheTtlMs });
     return value;
   } catch {
@@ -106,6 +106,18 @@ function parseLsof(stdout, clientPort, proxyPort) {
     candidates.push(info);
   }
   return candidates.find((candidate) => candidate.pid !== process.pid) || candidates[0] || {};
+}
+async function resolveStealChrome(info) {
+  if (!info.pid || process.platform !== "darwin") return info;
+  try {
+    const { stdout } = await execFileAsync$1("ps", ["-p", String(info.pid), "-o", "command="]);
+    return {
+      ...info,
+      isStealChrome: stdout.includes("steal-chrome-profile")
+    };
+  } catch {
+    return info;
+  }
 }
 const browserSourceHeader = "x-steal-source";
 let proxyConsoleFilterInstalled = false;
@@ -193,6 +205,7 @@ class ProxyService extends EventEmitter {
       };
       void sourceAppLookup.then((sourceApp) => {
         const capture = ctx.stealCapture;
+        if (sourceApp.isStealChrome) capture.source = "browser";
         capture.sourceAppName = sourceApp.name || capture.sourceAppName;
         capture.sourceProcessId = sourceApp.pid;
       }).finally(callback);
@@ -218,6 +231,7 @@ class ProxyService extends EventEmitter {
           const sourceApp = await ctx.stealSourceAppLookup;
           const requestBody = Buffer.concat(requestChunks);
           const responseBody = Buffer.concat(responseChunks);
+          if (sourceApp.isStealChrome) capture.source = "browser";
           capture.sourceAppName = sourceApp.name || capture.sourceAppName;
           capture.sourceProcessId = sourceApp.pid;
           capture.durationMs = Date.now() - startedAtMs;

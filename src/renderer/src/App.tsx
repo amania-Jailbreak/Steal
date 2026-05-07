@@ -5,7 +5,7 @@ import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import xml from 'highlight.js/lib/languages/xml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
-import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Folder, FolderOpen, Funnel, Library, Pause, Play, Plus, RefreshCcw, Save, Search, Send, Settings, Trash2, X } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Folder, FolderOpen, Funnel, Library, Monitor, Pause, Play, Plus, RefreshCcw, Save, Search, Send, Settings, Trash2, X } from 'lucide-react'
 import type { AppSettings, BrowserMode, CapturedExchange, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection } from '../../shared/types'
 import './styles.css'
 
@@ -16,6 +16,7 @@ type CodeLanguage = 'json' | 'javascript' | 'xml' | 'plaintext'
 type RequestEditorTab = 'query' | 'headers' | 'body'
 type ResponseViewerTab = 'headers' | 'body' | 'metrics'
 type SettingsCategory = 'startup' | 'browser'
+type ResourceFilter = 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
 type KeyValueRow = { id: string; key: string; value: string; enabled: boolean }
 type CaptureContextMenu = { capture: CapturedExchange; x: number; y: number }
 
@@ -37,6 +38,20 @@ const MAX_DETAILS_WIDTH = 760
 const MIN_CENTER_WIDTH = 460
 const MIN_BROWSER_HEIGHT = 220
 const MIN_NETWORK_HEIGHT = 150
+const resourceFilters: Array<{ id: ResourceFilter; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'fetch', label: 'Fetch/XHR' },
+  { id: 'doc', label: 'Doc' },
+  { id: 'css', label: 'CSS' },
+  { id: 'js', label: 'JS' },
+  { id: 'font', label: 'Font' },
+  { id: 'img', label: 'Img' },
+  { id: 'media', label: 'Media' },
+  { id: 'manifest', label: 'Manifest' },
+  { id: 'socket', label: 'Socket' },
+  { id: 'wasm', label: 'Wasm' },
+  { id: 'other', label: 'Other' }
+]
 const defaultAppSettings: AppSettings = {
   autoStartProxy: true,
   systemProxyEnabled: true,
@@ -62,7 +77,8 @@ export default function App(): JSX.Element {
   const [expandedCollectionIds, setExpandedCollectionIds] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [showFilterPanel, setShowFilterPanel] = useState(false)
-  const [filterEnabled, setFilterEnabled] = useState(true)
+  const [appBrowserOnly, setAppBrowserOnly] = useState(false)
+  const [resourceFilter, setResourceFilter] = useState<ResourceFilter>('all')
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set())
   const [activeMode, setActiveMode] = useState<AppMode>('capture')
   const [tab, setTab] = useState<DetailTab>('headers')
@@ -129,13 +145,15 @@ export default function App(): JSX.Element {
   const filteredCaptures = useMemo(() => {
     const needle = query.trim().toLowerCase()
     const sourceFiltered = showBrowserTraffic ? captures : captures.filter((capture) => capture.source !== 'browser')
-    if (!filterEnabled) return sourceFiltered
+    if (!showFilterPanel) return sourceFiltered
     return sourceFiltered.filter((capture) => {
+      if (appBrowserOnly && capture.source !== 'browser') return false
+      if (resourceFilter !== 'all' && classifyResource(capture) !== resourceFilter) return false
       const domain = domainFromCapture(capture)
       if (selectedDomains.size > 0 && !selectedDomains.has(domain)) return false
       return !needle || captureMatchesQuery(capture, needle)
     })
-  }, [captures, filterEnabled, query, selectedDomains, showBrowserTraffic])
+  }, [appBrowserOnly, captures, query, resourceFilter, selectedDomains, showBrowserTraffic, showFilterPanel])
 
   const availableDomains = useMemo(() => {
     const counts = new Map<string, number>()
@@ -282,6 +300,8 @@ export default function App(): JSX.Element {
 
   function clearFilters(): void {
     setQuery('')
+    setAppBrowserOnly(false)
+    setResourceFilter('all')
     setSelectedDomains(new Set())
   }
 
@@ -391,8 +411,8 @@ export default function App(): JSX.Element {
           <strong>{modeTitle(activeMode)}</strong>
           <span>{modeSummary(activeMode, filteredCaptures.length, captures.length, collections.length, savedApis.length)}</span>
           {activeMode === 'capture' && (
-            <em className={filterEnabled && (query || selectedDomains.size > 0) ? 'summary-chip active' : 'summary-chip'}>
-              {filterEnabled ? 'Filter ON' : 'Filter OFF'}
+            <em className={showFilterPanel && (query || selectedDomains.size > 0 || appBrowserOnly || resourceFilter !== 'all') ? 'summary-chip active' : 'summary-chip'}>
+              {showFilterPanel ? 'Filter ON' : 'Filter OFF'}
             </em>
           )}
         </div>
@@ -475,12 +495,11 @@ export default function App(): JSX.Element {
                     {settings.browserMode === 'chrome' ? 'Chrome' : 'Browser'}
                   </button>
                   <button
-                    className={showFilterPanel || (filterEnabled && (query || selectedDomains.size > 0)) ? 'filter-toggle active' : 'filter-toggle'}
+                    className={showFilterPanel ? 'filter-toggle active' : 'filter-toggle'}
                     title="Filters"
                     onClick={() => setShowFilterPanel((current) => !current)}
                   >
                     <Funnel size={15} />
-                    Filter
                   </button>
                   <button title="Clear captures" onClick={clearCaptures}><Trash2 size={15} /></button>
                 </div>
@@ -493,13 +512,13 @@ export default function App(): JSX.Element {
                         <span>Search</span>
                         <div className="filter-heading-actions">
                           <button
-                            className={filterEnabled ? 'filter-power active' : 'filter-power'}
-                            title={filterEnabled ? 'Filter ON' : 'Filter OFF'}
-                            onClick={() => setFilterEnabled((current) => !current)}
+                            className={appBrowserOnly ? 'source-icon-filter active' : 'source-icon-filter'}
+                            title={`App Browser only (${captures.filter((capture) => capture.source === 'browser').length})`}
+                            onClick={() => setAppBrowserOnly((current) => !current)}
                           >
-                            {filterEnabled ? 'ON' : 'OFF'}
+                            <Monitor size={14} />
                           </button>
-                          {(query || selectedDomains.size > 0) && <button title="Clear filters" onClick={clearFilters}><X size={14} /></button>}
+                          {(query || selectedDomains.size > 0 || appBrowserOnly || resourceFilter !== 'all') && <button title="Clear filters" onClick={clearFilters}><X size={14} /></button>}
                         </div>
                       </div>
                       <label className="filter-search">
@@ -510,6 +529,19 @@ export default function App(): JSX.Element {
                           onChange={(event) => setQuery(event.target.value)}
                         />
                       </label>
+                    </div>
+                    <div className="filter-panel-section">
+                      <div className="resource-filter-list">
+                        {resourceFilters.map((item) => (
+                          <button
+                            key={item.id}
+                            className={resourceFilter === item.id ? 'resource-filter active' : 'resource-filter'}
+                            onClick={() => setResourceFilter(item.id)}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <div className="filter-panel-section domain-section">
                       <div className="filter-panel-heading">
@@ -1319,6 +1351,26 @@ function domainFromCapture(capture: CapturedExchange): string {
   } catch {
     return '(unknown)'
   }
+}
+
+function classifyResource(capture: CapturedExchange): Exclude<ResourceFilter, 'all'> {
+  const responseType = headerValueToString(capture.responseHeaders['content-type']).toLowerCase()
+  const requestAccept = headerValueToString(capture.requestHeaders.accept).toLowerCase()
+  const requestUpgrade = headerValueToString(capture.requestHeaders.upgrade).toLowerCase()
+  const url = capture.url.toLowerCase().split('?')[0]
+
+  if (requestUpgrade.includes('websocket') || url.startsWith('ws://') || url.startsWith('wss://')) return 'socket'
+  if (responseType.includes('text/html') || requestAccept.includes('text/html')) return 'doc'
+  if (responseType.includes('text/css') || url.endsWith('.css')) return 'css'
+  if (responseType.includes('javascript') || responseType.includes('ecmascript') || /\.(mjs|cjs|js)$/.test(url)) return 'js'
+  if (responseType.includes('font') || /\.(woff2?|ttf|otf|eot)$/.test(url)) return 'font'
+  if (responseType.startsWith('image/') || /\.(png|jpe?g|gif|webp|avif|svg|ico)$/.test(url)) return 'img'
+  if (responseType.startsWith('audio/') || responseType.startsWith('video/') || /\.(mp4|webm|mov|m4v|mp3|wav|m4a|aac|ogg|m3u8|ts)$/.test(url)) return 'media'
+  if (responseType.includes('manifest') || url.endsWith('.webmanifest') || url.endsWith('/manifest.json')) return 'manifest'
+  if (responseType.includes('wasm') || url.endsWith('.wasm')) return 'wasm'
+  if (responseType.includes('json') || responseType.includes('xml') || responseType.includes('text/plain') || requestAccept.includes('application/json')) return 'fetch'
+  if (['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(capture.method.toUpperCase()) && !requestAccept.includes('text/html')) return 'fetch'
+  return 'other'
 }
 
 function captureMatchesQuery(capture: CapturedExchange, needle: string): boolean {

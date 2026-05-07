@@ -8,6 +8,7 @@ const cacheTtlMs = 3_000
 export interface ClientProcessInfo {
   name?: string
   pid?: number
+  isStealChrome?: boolean
 }
 
 export async function findClientProcess(clientPort: number, proxyPort: number): Promise<ClientProcessInfo> {
@@ -18,7 +19,7 @@ export async function findClientProcess(clientPort: number, proxyPort: number): 
 
   try {
     const { stdout } = await execFileAsync('lsof', ['-nP', `-iTCP:${proxyPort}`, '-sTCP:ESTABLISHED'])
-    const value = parseLsof(stdout, clientPort, proxyPort)
+    const value = await resolveStealChrome(parseLsof(stdout, clientPort, proxyPort))
     cache.set(key, { value, expiresAt: Date.now() + cacheTtlMs })
     return value
   } catch {
@@ -43,4 +44,17 @@ function parseLsof(stdout: string, clientPort: number, proxyPort: number): Clien
   }
 
   return candidates.find((candidate) => candidate.pid !== process.pid) || candidates[0] || {}
+}
+
+async function resolveStealChrome(info: ClientProcessInfo): Promise<ClientProcessInfo> {
+  if (!info.pid || process.platform !== 'darwin') return info
+  try {
+    const { stdout } = await execFileAsync('ps', ['-p', String(info.pid), '-o', 'command='])
+    return {
+      ...info,
+      isStealChrome: stdout.includes('steal-chrome-profile')
+    }
+  } catch {
+    return info
+  }
 }

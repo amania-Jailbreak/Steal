@@ -948,8 +948,8 @@ button:hover {
 .filter-panel {
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid #dfe4ec;
   background: #fbfcfe;
 }
@@ -961,6 +961,7 @@ button:hover {
 }
 
 .filter-panel-section.domain-section {
+  flex: 1;
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -991,22 +992,6 @@ button:hover {
   gap: 5px;
 }
 
-.filter-power {
-  min-width: 42px;
-  min-height: 24px;
-  border-color: #d7dce5;
-  color: #667386;
-  background: #ffffff;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.filter-power.active {
-  border-color: #b9c8eb;
-  color: #2457c5;
-  background: #eef4ff;
-}
-
 .filter-panel-heading strong {
   color: #2457c5;
 }
@@ -1032,6 +1017,31 @@ button:hover {
   font-size: 12px;
 }
 
+.resource-filter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.resource-filter {
+  min-height: 26px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid #cfd6e2;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #536174;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.resource-filter:hover,
+.resource-filter.active {
+  border-color: #b9c8eb;
+  background: #eef4ff;
+  color: #2457c5;
+}
+
 .domain-list {
   min-height: 0;
   overflow: auto;
@@ -1052,6 +1062,22 @@ button:hover {
   color: #243044;
   font-size: 12px;
   text-align: left;
+}
+
+.source-icon-filter {
+  min-width: 28px;
+  min-height: 24px;
+  padding: 0;
+  border: 1px solid #d7dce5;
+  background: #ffffff;
+  color: #667386;
+}
+
+.source-icon-filter:hover,
+.source-icon-filter.active {
+  border-color: #b9c8eb;
+  background: #eef4ff;
+  color: #2457c5;
 }
 
 .domain-filter:hover,

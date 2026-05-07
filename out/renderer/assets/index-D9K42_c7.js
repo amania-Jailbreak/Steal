@@ -15043,7 +15043,7 @@ const createLucideIcon = (iconName, iconNode) => {
   Component.displayName = toPascalCase(iconName);
   return Component;
 };
-const __iconNode$k = [
+const __iconNode$l = [
   [
     "path",
     {
@@ -15052,22 +15052,22 @@ const __iconNode$k = [
     }
   ]
 ];
-const Activity = createLucideIcon("activity", __iconNode$k);
-const __iconNode$j = [
+const Activity = createLucideIcon("activity", __iconNode$l);
+const __iconNode$k = [
   ["path", { d: "m12 19-7-7 7-7", key: "1l729n" }],
   ["path", { d: "M19 12H5", key: "x3x0zl" }]
 ];
-const ArrowLeft = createLucideIcon("arrow-left", __iconNode$j);
-const __iconNode$i = [
+const ArrowLeft = createLucideIcon("arrow-left", __iconNode$k);
+const __iconNode$j = [
   ["path", { d: "M5 12h14", key: "1ays0h" }],
   ["path", { d: "m12 5 7 7-7 7", key: "xquz4c" }]
 ];
-const ArrowRight = createLucideIcon("arrow-right", __iconNode$i);
-const __iconNode$h = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
-const Check = createLucideIcon("check", __iconNode$h);
-const __iconNode$g = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
-const ChevronRight = createLucideIcon("chevron-right", __iconNode$g);
-const __iconNode$f = [
+const ArrowRight = createLucideIcon("arrow-right", __iconNode$j);
+const __iconNode$i = [["path", { d: "M20 6 9 17l-5-5", key: "1gmf2c" }]];
+const Check = createLucideIcon("check", __iconNode$i);
+const __iconNode$h = [["path", { d: "m9 18 6-6-6-6", key: "mthhwq" }]];
+const ChevronRight = createLucideIcon("chevron-right", __iconNode$h);
+const __iconNode$g = [
   [
     "path",
     {
@@ -15085,8 +15085,8 @@ const __iconNode$f = [
   ],
   ["path", { d: "m2 2 20 20", key: "1ooewy" }]
 ];
-const EyeOff = createLucideIcon("eye-off", __iconNode$f);
-const __iconNode$e = [
+const EyeOff = createLucideIcon("eye-off", __iconNode$g);
+const __iconNode$f = [
   [
     "path",
     {
@@ -15096,8 +15096,8 @@ const __iconNode$e = [
   ],
   ["circle", { cx: "12", cy: "12", r: "3", key: "1v7zrd" }]
 ];
-const Eye = createLucideIcon("eye", __iconNode$e);
-const __iconNode$d = [
+const Eye = createLucideIcon("eye", __iconNode$f);
+const __iconNode$e = [
   [
     "path",
     {
@@ -15106,8 +15106,8 @@ const __iconNode$d = [
     }
   ]
 ];
-const FolderOpen = createLucideIcon("folder-open", __iconNode$d);
-const __iconNode$c = [
+const FolderOpen = createLucideIcon("folder-open", __iconNode$e);
+const __iconNode$d = [
   [
     "path",
     {
@@ -15116,8 +15116,8 @@ const __iconNode$c = [
     }
   ]
 ];
-const Folder = createLucideIcon("folder", __iconNode$c);
-const __iconNode$b = [
+const Folder = createLucideIcon("folder", __iconNode$d);
+const __iconNode$c = [
   [
     "path",
     {
@@ -15126,14 +15126,20 @@ const __iconNode$b = [
     }
   ]
 ];
-const Funnel = createLucideIcon("funnel", __iconNode$b);
-const __iconNode$a = [
+const Funnel = createLucideIcon("funnel", __iconNode$c);
+const __iconNode$b = [
   ["path", { d: "m16 6 4 14", key: "ji33uf" }],
   ["path", { d: "M12 6v14", key: "1n7gus" }],
   ["path", { d: "M8 8v12", key: "1gg7y9" }],
   ["path", { d: "M4 4v16", key: "6qkkli" }]
 ];
-const Library = createLucideIcon("library", __iconNode$a);
+const Library = createLucideIcon("library", __iconNode$b);
+const __iconNode$a = [
+  ["rect", { width: "20", height: "14", x: "2", y: "3", rx: "2", key: "48i651" }],
+  ["line", { x1: "8", x2: "16", y1: "21", y2: "21", key: "1svkeh" }],
+  ["line", { x1: "12", x2: "12", y1: "17", y2: "21", key: "vw1qmm" }]
+];
+const Monitor = createLucideIcon("monitor", __iconNode$a);
 const __iconNode$9 = [
   ["rect", { x: "14", y: "3", width: "5", height: "18", rx: "1", key: "kaeet6" }],
   ["rect", { x: "5", y: "3", width: "5", height: "18", rx: "1", key: "1wsw3u" }]
@@ -15229,6 +15235,20 @@ const MAX_DETAILS_WIDTH = 760;
 const MIN_CENTER_WIDTH = 460;
 const MIN_BROWSER_HEIGHT = 220;
 const MIN_NETWORK_HEIGHT = 150;
+const resourceFilters = [
+  { id: "all", label: "All" },
+  { id: "fetch", label: "Fetch/XHR" },
+  { id: "doc", label: "Doc" },
+  { id: "css", label: "CSS" },
+  { id: "js", label: "JS" },
+  { id: "font", label: "Font" },
+  { id: "img", label: "Img" },
+  { id: "media", label: "Media" },
+  { id: "manifest", label: "Manifest" },
+  { id: "socket", label: "Socket" },
+  { id: "wasm", label: "Wasm" },
+  { id: "other", label: "Other" }
+];
 const defaultAppSettings = {
   autoStartProxy: true,
   systemProxyEnabled: true,
@@ -15253,7 +15273,8 @@ function App() {
   const [expandedCollectionIds, setExpandedCollectionIds] = reactExports.useState(/* @__PURE__ */ new Set());
   const [query, setQuery] = reactExports.useState("");
   const [showFilterPanel, setShowFilterPanel] = reactExports.useState(false);
-  const [filterEnabled, setFilterEnabled] = reactExports.useState(true);
+  const [appBrowserOnly, setAppBrowserOnly] = reactExports.useState(false);
+  const [resourceFilter, setResourceFilter] = reactExports.useState("all");
   const [selectedDomains, setSelectedDomains] = reactExports.useState(/* @__PURE__ */ new Set());
   const [activeMode, setActiveMode] = reactExports.useState("capture");
   const [tab, setTab] = reactExports.useState("headers");
@@ -15313,13 +15334,15 @@ function App() {
   const filteredCaptures = reactExports.useMemo(() => {
     const needle = query.trim().toLowerCase();
     const sourceFiltered = showBrowserTraffic ? captures : captures.filter((capture) => capture.source !== "browser");
-    if (!filterEnabled) return sourceFiltered;
+    if (!showFilterPanel) return sourceFiltered;
     return sourceFiltered.filter((capture) => {
+      if (appBrowserOnly && capture.source !== "browser") return false;
+      if (resourceFilter !== "all" && classifyResource(capture) !== resourceFilter) return false;
       const domain = domainFromCapture(capture);
       if (selectedDomains.size > 0 && !selectedDomains.has(domain)) return false;
       return !needle || captureMatchesQuery(capture, needle);
     });
-  }, [captures, filterEnabled, query, selectedDomains, showBrowserTraffic]);
+  }, [appBrowserOnly, captures, query, resourceFilter, selectedDomains, showBrowserTraffic, showFilterPanel]);
   const availableDomains = reactExports.useMemo(() => {
     const counts = /* @__PURE__ */ new Map();
     const sourceFiltered = showBrowserTraffic ? captures : captures.filter((capture) => capture.source !== "browser");
@@ -15446,6 +15469,8 @@ function App() {
   }
   function clearFilters() {
     setQuery("");
+    setAppBrowserOnly(false);
+    setResourceFilter("all");
     setSelectedDomains(/* @__PURE__ */ new Set());
   }
   function openSavePopup(capture) {
@@ -15550,7 +15575,7 @@ function App() {
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "topbar-summary", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: modeTitle(activeMode) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: modeSummary(activeMode, filteredCaptures.length, captures.length, collections.length, savedApis.length) }),
-        activeMode === "capture" && /* @__PURE__ */ jsxRuntimeExports.jsx("em", { className: filterEnabled && (query || selectedDomains.size > 0) ? "summary-chip active" : "summary-chip", children: filterEnabled ? "Filter ON" : "Filter OFF" })
+        activeMode === "capture" && /* @__PURE__ */ jsxRuntimeExports.jsx("em", { className: showFilterPanel && (query || selectedDomains.size > 0 || appBrowserOnly || resourceFilter !== "all") ? "summary-chip active" : "summary-chip", children: showFilterPanel ? "Filter ON" : "Filter OFF" })
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "topbar-actions", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs(
@@ -15650,16 +15675,13 @@ function App() {
                           ]
                         }
                       ),
-                      /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                      /* @__PURE__ */ jsxRuntimeExports.jsx(
                         "button",
                         {
-                          className: showFilterPanel || filterEnabled && (query || selectedDomains.size > 0) ? "filter-toggle active" : "filter-toggle",
+                          className: showFilterPanel ? "filter-toggle active" : "filter-toggle",
                           title: "Filters",
                           onClick: () => setShowFilterPanel((current) => !current),
-                          children: [
-                            /* @__PURE__ */ jsxRuntimeExports.jsx(Funnel, { size: 15 }),
-                            "Filter"
-                          ]
+                          children: /* @__PURE__ */ jsxRuntimeExports.jsx(Funnel, { size: 15 })
                         }
                       ),
                       /* @__PURE__ */ jsxRuntimeExports.jsx("button", { title: "Clear captures", onClick: clearCaptures, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Trash2, { size: 15 }) })
@@ -15674,13 +15696,13 @@ function App() {
                             /* @__PURE__ */ jsxRuntimeExports.jsx(
                               "button",
                               {
-                                className: filterEnabled ? "filter-power active" : "filter-power",
-                                title: filterEnabled ? "Filter ON" : "Filter OFF",
-                                onClick: () => setFilterEnabled((current) => !current),
-                                children: filterEnabled ? "ON" : "OFF"
+                                className: appBrowserOnly ? "source-icon-filter active" : "source-icon-filter",
+                                title: `App Browser only (${captures.filter((capture) => capture.source === "browser").length})`,
+                                onClick: () => setAppBrowserOnly((current) => !current),
+                                children: /* @__PURE__ */ jsxRuntimeExports.jsx(Monitor, { size: 14 })
                               }
                             ),
-                            (query || selectedDomains.size > 0) && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { title: "Clear filters", onClick: clearFilters, children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 14 }) })
+                            (query || selectedDomains.size > 0 || appBrowserOnly || resourceFilter !== "all") && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { title: "Clear filters", onClick: clearFilters, children: /* @__PURE__ */ jsxRuntimeExports.jsx(X, { size: 14 }) })
                           ] })
                         ] }),
                         /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "filter-search", children: [
@@ -15695,6 +15717,15 @@ function App() {
                           )
                         ] })
                       ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "filter-panel-section", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "resource-filter-list", children: resourceFilters.map((item) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "button",
+                        {
+                          className: resourceFilter === item.id ? "resource-filter active" : "resource-filter",
+                          onClick: () => setResourceFilter(item.id),
+                          children: item.label
+                        },
+                        item.id
+                      )) }) }),
                       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-panel-section domain-section", children: [
                         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "filter-panel-heading", children: [
                           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Domains" }),
@@ -16404,6 +16435,24 @@ function domainFromCapture(capture) {
   } catch {
     return "(unknown)";
   }
+}
+function classifyResource(capture) {
+  const responseType = headerValueToString(capture.responseHeaders["content-type"]).toLowerCase();
+  const requestAccept = headerValueToString(capture.requestHeaders.accept).toLowerCase();
+  const requestUpgrade = headerValueToString(capture.requestHeaders.upgrade).toLowerCase();
+  const url = capture.url.toLowerCase().split("?")[0];
+  if (requestUpgrade.includes("websocket") || url.startsWith("ws://") || url.startsWith("wss://")) return "socket";
+  if (responseType.includes("text/html") || requestAccept.includes("text/html")) return "doc";
+  if (responseType.includes("text/css") || url.endsWith(".css")) return "css";
+  if (responseType.includes("javascript") || responseType.includes("ecmascript") || /\.(mjs|cjs|js)$/.test(url)) return "js";
+  if (responseType.includes("font") || /\.(woff2?|ttf|otf|eot)$/.test(url)) return "font";
+  if (responseType.startsWith("image/") || /\.(png|jpe?g|gif|webp|avif|svg|ico)$/.test(url)) return "img";
+  if (responseType.startsWith("audio/") || responseType.startsWith("video/") || /\.(mp4|webm|mov|m4v|mp3|wav|m4a|aac|ogg|m3u8|ts)$/.test(url)) return "media";
+  if (responseType.includes("manifest") || url.endsWith(".webmanifest") || url.endsWith("/manifest.json")) return "manifest";
+  if (responseType.includes("wasm") || url.endsWith(".wasm")) return "wasm";
+  if (responseType.includes("json") || responseType.includes("xml") || responseType.includes("text/plain") || requestAccept.includes("application/json")) return "fetch";
+  if (["GET", "POST", "PUT", "PATCH", "DELETE"].includes(capture.method.toUpperCase()) && !requestAccept.includes("text/html")) return "fetch";
+  return "other";
 }
 function captureMatchesQuery(capture, needle) {
   return [
