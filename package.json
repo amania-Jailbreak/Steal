@@ -1,0 +1,30 @@
+{
+  "name": "steal",
+  "version": "0.1.0",
+  "description": "A browser-style Electron API capture and replay tool.",
+  "main": "./out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron-vite": "^5.0.0",
+    "highlight.js": "^11.11.1",
+    "http-mitm-proxy": "^1.1.0",
+    "lucide-react": "^1.14.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "electron": "^39.8.5",
+    "typescript": "^6.0.3",
+    "vite": "^7.2.7"
+  }
+}
