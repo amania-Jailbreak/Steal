@@ -1,8 +1,9 @@
 import { EventEmitter } from 'node:events'
 import { mkdirSync } from 'node:fs'
+import { isIP } from 'node:net'
 import { join } from 'node:path'
 import { Proxy as MitmProxy } from 'http-mitm-proxy'
-import { decodeBodyText } from './body-decode'
+import { decodeBody } from './body-decode'
 import { findClientProcess } from './client-process'
 import type { CapturedExchange, HeaderMap, ProxyStatus } from '../shared/types'
 
@@ -27,6 +28,7 @@ export class ProxyService extends EventEmitter {
   private proxy?: MitmProxy
   private captures: CapturedExchange[] = []
   private status: ProxyStatus
+  private capturePaused = false
 
   constructor(
     private readonly appDataDir: string,
@@ -38,6 +40,7 @@ export class ProxyService extends EventEmitter {
     mkdirSync(sslCaDir, { recursive: true })
     this.status = {
       running: false,
+      capturePaused: false,
       host,
       port,
       caCertPath: join(sslCaDir, 'certs', 'ca.pem'),
@@ -61,6 +64,13 @@ export class ProxyService extends EventEmitter {
     this.captures = []
   }
 
+  setCapturePaused(paused: boolean): ProxyStatus {
+    this.capturePaused = paused
+    this.status = { ...this.status, capturePaused: paused }
+    this.emit('status', this.getStatus())
+    return this.getStatus()
+  }
+
   async start(): Promise<ProxyStatus> {
     if (this.proxy) return this.getStatus()
 
@@ -68,6 +78,7 @@ export class ProxyService extends EventEmitter {
     this.proxy = proxy
     installProxyConsoleFilter()
     suppressNoisyProxyLogs(proxy)
+    guardCertificateHosts(proxy)
     this.status = { ...this.status, running: false, error: undefined }
     this.emit('status', this.getStatus())
 
@@ -148,16 +159,22 @@ export class ProxyService extends EventEmitter {
         const sourceApp = await (ctx.stealSourceAppLookup as Promise<{ name?: string; pid?: number; isStealChrome?: boolean }>)
         const requestBody = Buffer.concat(requestChunks)
         const responseBody = Buffer.concat(responseChunks)
+        const decodedRequestBody = decodeBody(requestBody, capture.requestHeaders)
+        const decodedResponseBody = decodeBody(responseBody, capture.responseHeaders)
         if (sourceApp.isStealChrome) capture.source = 'browser'
         capture.sourceAppName = sourceApp.name || capture.sourceAppName
         capture.sourceProcessId = sourceApp.pid
         capture.durationMs = Date.now() - startedAtMs
         capture.requestSize = requestBody.byteLength
         capture.responseSize = responseBody.byteLength
-        capture.requestBody = decodeBodyText(requestBody, capture.requestHeaders)
-        capture.responseBody = decodeBodyText(responseBody, capture.responseHeaders)
-        this.captures.push(capture)
-        this.emit('capture', capture)
+        capture.requestBody = decodedRequestBody.text
+        capture.requestBodyBase64 = decodedRequestBody.base64
+        capture.responseBody = decodedResponseBody.text
+        capture.responseBodyBase64 = decodedResponseBody.base64
+        if (!this.capturePaused) {
+          this.captures.push(capture)
+          this.emit('capture', capture)
+        }
         done()
         })().catch((error: Error) => done(error))
       })
@@ -208,6 +225,29 @@ function suppressNoisyProxyLogs(proxy: MitmProxy): void {
     if (isBenignProxyError(kind, error)) return
     originalOnError(kind, ctx, error)
   }
+}
+
+function guardCertificateHosts(proxy: MitmProxy): void {
+  const originalOnCertificateMissing = proxy.onCertificateMissing.bind(proxy)
+  proxy.onCertificateMissing = (ctx: ProxyContext, files: Record<string, any>, callback: (error?: Error, files?: Record<string, any>) => void): void => {
+    const hosts = (files.hosts || [ctx.hostname]).map(String).filter(isValidCertificateHost)
+    if (hosts.length === 0) {
+      callback(new Error(`Invalid CONNECT host for certificate: ${String(ctx.hostname || '')}`))
+      return
+    }
+    try {
+      originalOnCertificateMissing(ctx, { ...files, hosts }, callback)
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+}
+
+function isValidCertificateHost(host: string): boolean {
+  const normalized = host.trim().replace(/^\[|\]$/g, '')
+  if (!normalized || normalized.includes('/') || normalized.includes(':')) return false
+  if (/^[\d.]+$/.test(normalized)) return isIP(normalized) !== 0
+  return /^(?:\*\.)?(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$/.test(normalized)
 }
 
 function isBenignProxyError(kind: string | undefined, error: Error): boolean {

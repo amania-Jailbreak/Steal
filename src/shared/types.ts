@@ -14,11 +14,13 @@ export interface CapturedExchange {
   durationMs: number
   requestHeaders: HeaderMap
   requestBody: string
+  requestBodyBase64?: string
   requestSize: number
   responseStatusCode: number
   responseStatusMessage: string
   responseHeaders: HeaderMap
   responseBody: string
+  responseBodyBase64?: string
   responseSize: number
   savedName?: string
   tags?: string[]
@@ -26,6 +28,7 @@ export interface CapturedExchange {
 
 export interface ProxyStatus {
   running: boolean
+  capturePaused: boolean
   host: string
   port: number
   caCertPath: string
@@ -55,6 +58,18 @@ export interface SavedCollection {
   createdAt: string
   updatedAt: string
   itemCount: number
+  settings: CollectionSettings
+}
+
+export interface CollectionSettings {
+  variables: Record<string, string>
+  headers: Record<string, string>
+  cookies: Record<string, string>
+  userAgent: {
+    enabled: boolean
+    preset: string
+    value: string
+  }
 }
 
 export interface ReplayRequest {
@@ -69,13 +84,13 @@ export interface ReplayResult {
   statusText: string
   headers: Record<string, string>
   body: string
+  bodyBase64?: string
   durationMs: number
   size: number
 }
 
 export type BrowserMode = 'embedded' | 'chrome'
 export type AppPlatform = NodeJS.Platform
-export type ThemeBackgroundMode = 'solid' | 'transparent' | 'image'
 
 export interface AppTheme {
   name: string
@@ -107,13 +122,6 @@ export interface AppTheme {
     text: string
     background: string
   }>
-  background: {
-    mode: ThemeBackgroundMode
-    opacity: number
-    imagePath: string
-    imageOpacity: number
-    imageBrightness: number
-  }
 }
 
 export interface AppSettings {
@@ -129,12 +137,14 @@ export interface AppApi {
   getProxyStatus: () => Promise<ProxyStatus>
   startProxy: () => Promise<ProxyStatus>
   stopProxy: () => Promise<ProxyStatus>
+  setCapturePaused: (paused: boolean) => Promise<ProxyStatus>
   enableSystemProxy: () => Promise<void>
   disableSystemProxy: () => Promise<void>
   clearCaptures: () => Promise<void>
   getCaptures: () => Promise<CapturedExchange[]>
   saveApi: (exchangeId: string, name: string, tags: string[], collectionName: string) => Promise<SavedApi>
   listCollections: () => Promise<SavedCollection[]>
+  updateCollectionSettings: (collectionId: string, settings: CollectionSettings) => Promise<SavedCollection[]>
   listSavedApis: () => Promise<SavedApi[]>
   exportSavedApis: () => Promise<string | undefined>
   importSavedApis: () => Promise<SavedApi[]>
@@ -149,9 +159,6 @@ export interface AppApi {
   updateTheme: (theme: AppTheme) => Promise<AppTheme>
   resetTheme: () => Promise<AppTheme>
   openThemeFile: () => Promise<void>
-  chooseThemeImage: () => Promise<string | undefined>
-  getThemeImageDataUrl: (imagePath: string) => Promise<string | undefined>
-  applyThemeBackground: (background: AppTheme['background']) => Promise<void>
   getThemeHotReload: () => Promise<boolean>
   setThemeHotReload: (enabled: boolean) => Promise<boolean>
   getAppPlatform: () => Promise<AppPlatform>

@@ -38,13 +38,6 @@ export const defaultTheme: AppTheme = {
     delete: { text: '#991b1b', background: '#fff1f2' },
     head: { text: '#2457c5', background: '#eef4ff' },
     options: { text: '#2457c5', background: '#eef4ff' }
-  },
-  background: {
-    mode: 'solid',
-    opacity: 1,
-    imagePath: '',
-    imageOpacity: 0.45,
-    imageBrightness: 0.85
   }
 }
 
@@ -281,13 +274,12 @@ export class ThemeStore {
 }
 
 function makeTheme(name: string, colors: AppTheme['colors'], methods: Partial<AppTheme['methods']> = {}): AppTheme {
-  return { name, colors, methods: { ...defaultTheme.methods, ...methods }, background: defaultTheme.background }
+  return { name, colors, methods: { ...defaultTheme.methods, ...methods } }
 }
 
 function normalizeTheme(value: Partial<AppTheme>): AppTheme {
   const colors = value.colors || {}
   const methods = value.methods || {}
-  const background = value.background || {}
   return {
     name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : defaultTheme.name,
     colors: Object.fromEntries(
@@ -304,21 +296,10 @@ function normalizeTheme(value: Partial<AppTheme>): AppTheme {
           background: normalizeColor(candidate?.background, fallback.background)
         }]
       })
-    ),
-    background: {
-      mode: ['solid', 'transparent', 'image'].includes(background.mode || '') ? background.mode! : defaultTheme.background.mode,
-      opacity: normalizeNumber(background.opacity, defaultTheme.background.opacity, 0, 1),
-      imagePath: typeof background.imagePath === 'string' ? background.imagePath : defaultTheme.background.imagePath,
-      imageOpacity: normalizeNumber(background.imageOpacity, defaultTheme.background.imageOpacity, 0, 1),
-      imageBrightness: normalizeNumber(background.imageBrightness, defaultTheme.background.imageBrightness, 0.2, 1.6)
-    }
+    )
   }
 }
 
 function normalizeColor(value: string | undefined, fallback: string): string {
   return typeof value === 'string' && colorPattern.test(value.trim()) ? value.trim() : fallback
-}
-
-function normalizeNumber(value: number | undefined, fallback: number, min: number, max: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback
 }

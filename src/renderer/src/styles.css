@@ -37,23 +37,15 @@
   --theme-method-head-background: #eef4ff;
   --theme-method-options-text: #2457c5;
   --theme-method-options-background: #eef4ff;
-  --theme-background-opacity: 1;
-  --theme-background-image: none;
-  --theme-background-image-opacity: 0.45;
-  --theme-background-image-brightness: 0.85;
-  --theme-transparent-surface: rgba(255, 255, 255, 0.22);
-  --theme-image-surface: rgba(255, 255, 255, 0.58);
-  --theme-transparent-subtle: rgba(251, 252, 254, 0.18);
-  --theme-image-subtle: rgba(251, 252, 254, 0.48);
   color: var(--theme-text);
-  background: transparent;
+  background: var(--theme-app-background);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 html,
 body,
 #root {
-  background: transparent !important;
+  background: var(--theme-app-background);
 }
 
 * {
@@ -63,7 +55,7 @@ body,
 body {
   margin: 0;
   overflow: hidden;
-  background: transparent;
+  background: var(--theme-app-background);
 }
 
 * {
@@ -135,100 +127,12 @@ button:hover {
   height: 100vh;
   display: grid;
   grid-template-rows: 34px minmax(0, 1fr);
-  background: transparent;
+  background: var(--theme-app-background);
 }
 
-.app-window > :not(.app-background) {
+.app-window > * {
   position: relative;
   z-index: 1;
-}
-
-.app-window::before {
-  display: none;
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  background: var(--theme-app-background);
-  opacity: var(--theme-background-opacity);
-}
-
-.app-window::after {
-  display: none;
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: var(--theme-background-image);
-  background-size: cover;
-  background-position: center;
-  opacity: 0;
-  filter: brightness(var(--theme-background-image-brightness));
-}
-
-.app-background {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background: var(--theme-app-background);
-  opacity: 1;
-}
-
-.app-window.background-transparent .app-background {
-  background: transparent;
-  opacity: 0;
-}
-
-.app-window.background-image .app-background {
-  background-image: var(--theme-background-image);
-  background-size: cover;
-  background-position: center;
-  opacity: var(--theme-background-image-opacity);
-  filter: brightness(var(--theme-background-image-brightness));
-}
-
-.app-window.background-transparent::before {
-  opacity: var(--theme-background-opacity);
-}
-
-.app-window.background-image::before {
-  opacity: 0;
-}
-
-.app-window.background-transparent .window-titlebar,
-.app-window.background-transparent .topbar,
-.app-window.background-transparent .mode-rail,
-.app-window.background-transparent .filter-panel,
-.app-window.background-transparent .details,
-.app-window.background-transparent .network-panel,
-.app-window.background-transparent .settings-sidebar,
-.app-window.background-transparent .settings-page,
-.app-window.background-transparent .collection-sidebar,
-.app-window.background-transparent .collection-detail,
-.app-window.background-transparent .test-panel {
-  background: var(--theme-transparent-surface);
-}
-
-.app-window.background-image::after {
-  opacity: var(--theme-background-image-opacity);
-}
-
-.app-window.background-image .window-titlebar,
-.app-window.background-image .topbar,
-.app-window.background-image .mode-rail,
-.app-window.background-image .filter-panel,
-.app-window.background-image .details,
-.app-window.background-image .network-panel,
-.app-window.background-image .settings-sidebar,
-.app-window.background-image .settings-page,
-.app-window.background-image .collection-sidebar,
-.app-window.background-image .collection-detail,
-.app-window.background-image .test-panel {
-  background: var(--theme-image-surface);
-  -webkit-backdrop-filter: blur(10px) saturate(1.1);
-  backdrop-filter: blur(10px);
 }
 
 .app-window.platform-darwin {
@@ -738,17 +642,6 @@ button:hover {
   min-width: 0;
 }
 
-.background-card {
-  align-items: start;
-}
-
-.background-controls {
-  min-width: 360px;
-  display: grid;
-  justify-items: stretch;
-  gap: 10px;
-}
-
 .range-control {
   display: grid;
   grid-template-columns: 112px minmax(160px, 1fr);
@@ -947,6 +840,61 @@ button:hover {
 
 .collection-details {
   border-left: 0;
+}
+
+.api-tab-bar {
+  min-height: 38px;
+  display: flex;
+  align-items: end;
+  gap: 2px;
+  padding: 5px 8px 0;
+  border-bottom: 1px solid var(--theme-border);
+  background: var(--theme-surface-subtle);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.api-tab {
+  min-width: 170px;
+  max-width: 260px;
+  height: 32px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 5px 0 8px;
+  border: 1px solid var(--theme-border);
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  background: var(--theme-surface-subtle);
+  cursor: pointer;
+}
+
+.api-tab.active {
+  background: var(--theme-surface);
+  color: var(--theme-text-strong);
+}
+
+.api-tab strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.api-tab-close {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--theme-text-muted);
+}
+
+.api-tab-close:hover {
+  background: var(--theme-surface-hover);
+  color: var(--theme-text);
 }
 
 .collection-meta {
@@ -1373,7 +1321,8 @@ button:hover {
 }
 
 .browser-toggle,
-.filter-toggle {
+.filter-toggle,
+.capture-pause {
   min-height: 30px;
   gap: 5px;
   border: 1px solid var(--theme-border);
@@ -1383,7 +1332,8 @@ button:hover {
 }
 
 .browser-toggle.active,
-.filter-toggle.active {
+.filter-toggle.active,
+.capture-pause.active {
   border-color: var(--theme-primary-border);
   background: var(--theme-primary-soft);
   color: var(--theme-primary);
@@ -1697,6 +1647,58 @@ button:hover {
   color: var(--theme-primary);
 }
 
+.detail-search {
+  margin-left: auto;
+  height: 30px;
+  min-width: 180px;
+  max-width: 280px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  padding: 0 6px 0 8px;
+  background: var(--theme-surface);
+  color: var(--theme-text-muted);
+}
+
+.detail-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--theme-text);
+  font-size: 12px;
+}
+
+.detail-search span {
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--theme-primary-soft);
+  color: var(--theme-primary);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.detail-search button {
+  min-width: 22px;
+  min-height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--theme-text-muted);
+}
+
+mark {
+  border-radius: 3px;
+  padding: 0 2px;
+  background: color-mix(in srgb, var(--theme-warning-soft) 78%, #ffd166);
+  color: var(--theme-warning);
+}
+
 .headers-panel {
   min-height: 0;
   flex: 1;
@@ -1855,6 +1857,106 @@ button:hover {
   background: transparent;
 }
 
+.binary-viewer {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  background: var(--theme-code-background);
+  color: var(--theme-code-text);
+  overflow: hidden;
+}
+
+.binary-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-code-text) 18%, transparent);
+  font-size: 12px;
+}
+
+.binary-toolbar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--theme-code-text) 72%, transparent);
+}
+
+.image-preview {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  max-height: 42vh;
+  padding: 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-code-text) 18%, transparent);
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%);
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-size: 20px 20px;
+  overflow: auto;
+}
+
+.image-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(42vh - 28px);
+  object-fit: contain;
+  border: 1px solid color-mix(in srgb, var(--theme-code-text) 16%, transparent);
+  background: white;
+}
+
+.binary-table {
+  overflow: auto;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.binary-row {
+  display: grid;
+  grid-template-columns: 86px 390px minmax(160px, 1fr);
+  min-width: 700px;
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-code-text) 9%, transparent);
+}
+
+.binary-row > * {
+  padding: 5px 10px;
+  white-space: pre;
+}
+
+.binary-row > * + * {
+  border-left: 1px solid color-mix(in srgb, var(--theme-code-text) 10%, transparent);
+}
+
+.binary-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: color-mix(in srgb, var(--theme-code-background) 90%, var(--theme-code-text));
+  color: color-mix(in srgb, var(--theme-code-text) 72%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.binary-offset {
+  color: #93c5fd;
+}
+
+.binary-hex {
+  color: #d6deeb;
+}
+
+.binary-ascii {
+  color: #a7f3d0;
+}
+
 .hljs {
   color: var(--theme-code-text);
   background: transparent;
@@ -1935,6 +2037,10 @@ button:hover {
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.25);
 }
 
+.collection-settings-dialog {
+  width: min(980px, calc(100vw - 44px));
+}
+
 .save-dialog-header,
 .save-dialog-actions {
   display: flex;
@@ -1981,6 +2087,114 @@ button:hover {
   border-radius: 6px;
   padding: 0 9px;
   color: var(--theme-text);
+}
+
+.collection-settings-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  flex: 1;
+  overflow: hidden;
+}
+
+.collection-settings-tabs {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  border-right: 1px solid var(--theme-border);
+  background: var(--theme-surface-subtle);
+  overflow: auto;
+}
+
+.collection-settings-tabs .settings-category {
+  width: 100%;
+}
+
+.collection-settings-page {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 20px;
+  overflow: auto;
+}
+
+.collection-settings-page-title {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--theme-border);
+}
+
+.collection-settings-page-title.inline {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.collection-settings-page-title > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.collection-settings-page-title strong {
+  font-size: 18px;
+  color: var(--theme-text-strong);
+}
+
+.collection-settings-page-title span {
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.collection-settings-page .kv-editor {
+  min-height: 390px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+}
+
+.ua-settings {
+  min-height: 0;
+  display: grid;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--theme-surface);
+}
+
+.ua-controls {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+}
+
+.ua-controls label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ua-controls select,
+.ua-controls textarea {
+  width: 100%;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: var(--theme-surface);
+  color: var(--theme-text);
+}
+
+.ua-controls textarea {
+  min-height: 210px;
+  padding: 9px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
 }
 
 .save-summary {
@@ -2051,215 +2265,6 @@ button:hover {
   color: var(--theme-text-muted);
 }
 
-.app-window.background-transparent .window-titlebar,
-.app-window.background-transparent .app-shell,
-.app-window.background-transparent .topbar,
-.app-window.background-transparent .mode-rail,
-.app-window.background-transparent .workspace,
-.app-window.background-transparent .browser-pane,
-.app-window.background-transparent .network-panel,
-.app-window.background-transparent .filter-panel,
-.app-window.background-transparent .details,
-.app-window.background-transparent .details-panel,
-.app-window.background-transparent .settings-sidebar,
-.app-window.background-transparent .settings-page,
-.app-window.background-transparent .settings-view,
-.app-window.background-transparent .collection-view,
-.app-window.background-transparent .collection-sidebar,
-.app-window.background-transparent .collection-detail,
-.app-window.background-transparent .collection-content,
-.app-window.background-transparent .test-panel,
-.app-window.background-transparent .request-editor,
-.app-window.background-transparent .test-response,
-.app-window.background-transparent .browser-toolbar,
-.app-window.background-transparent .statusbar {
-  background: var(--theme-transparent-surface) !important;
-}
-
-.app-window.background-image .window-titlebar,
-.app-window.background-image .app-shell,
-.app-window.background-image .topbar,
-.app-window.background-image .mode-rail,
-.app-window.background-image .workspace,
-.app-window.background-image .browser-pane,
-.app-window.background-image .network-panel,
-.app-window.background-image .filter-panel,
-.app-window.background-image .details,
-.app-window.background-image .details-panel,
-.app-window.background-image .settings-sidebar,
-.app-window.background-image .settings-page,
-.app-window.background-image .settings-view,
-.app-window.background-image .collection-view,
-.app-window.background-image .collection-sidebar,
-.app-window.background-image .collection-detail,
-.app-window.background-image .collection-content,
-.app-window.background-image .test-panel,
-.app-window.background-image .request-editor,
-.app-window.background-image .test-response,
-.app-window.background-image .browser-toolbar,
-.app-window.background-image .statusbar {
-  background: var(--theme-image-surface) !important;
-  -webkit-backdrop-filter: blur(10px) saturate(1.1);
-  backdrop-filter: blur(10px) saturate(1.1);
-}
-
-.app-window.background-transparent .app-shell,
-.app-window.background-transparent .workspace,
-.app-window.background-transparent .settings-view,
-.app-window.background-transparent .collection-view,
-.app-window.background-image .app-shell,
-.app-window.background-image .workspace,
-.app-window.background-image .settings-view,
-.app-window.background-image .collection-view {
-  background: transparent !important;
-  backdrop-filter: none;
-}
-
-.app-window.background-transparent button,
-.app-window.background-transparent input,
-.app-window.background-transparent select,
-.app-window.background-transparent textarea,
-.app-window.background-transparent .setting-card,
-.app-window.background-transparent .theme-preset,
-.app-window.background-transparent .address-bar,
-.app-window.background-transparent .filter-search,
-.app-window.background-transparent .resource-filter,
-.app-window.background-transparent .header-section,
-.app-window.background-transparent .header-row,
-.app-window.background-transparent .kv-editor,
-.app-window.background-transparent .save-dialog {
-  background-color: var(--theme-transparent-surface) !important;
-}
-
-.app-window.background-transparent::before,
-.app-window.background-transparent::after {
-  opacity: 0 !important;
-}
-
-.app-window.background-transparent .app-shell,
-.app-window.background-transparent .workspace,
-.app-window.background-transparent .browser-pane,
-.app-window.background-transparent .settings-view,
-.app-window.background-transparent .settings-page,
-.app-window.background-transparent .collection-view,
-.app-window.background-transparent .collection-content,
-.app-window.background-transparent .network-panel,
-.app-window.background-transparent .details,
-.app-window.background-transparent .details-panel {
-  background: transparent !important;
-  background-color: transparent !important;
-}
-
-.app-window.background-image .app-shell,
-.app-window.background-image .workspace,
-.app-window.background-image .browser-pane,
-.app-window.background-image .settings-view,
-.app-window.background-image .settings-page,
-.app-window.background-image .collection-view,
-.app-window.background-image .collection-content,
-.app-window.background-image .collection-detail,
-.app-window.background-image .network-panel,
-.app-window.background-image .details,
-.app-window.background-image .details-panel {
-  background: transparent !important;
-  background-color: transparent !important;
-}
-
-.app-window.background-transparent .settings-page,
-.app-window.background-transparent .settings-page > *,
-.app-window.background-image .settings-page,
-.app-window.background-image .settings-page > * {
-  background-color: transparent !important;
-}
-
-.app-window.background-transparent .window-titlebar,
-.app-window.background-transparent .topbar,
-.app-window.background-transparent .mode-rail,
-.app-window.background-transparent .settings-sidebar,
-.app-window.background-transparent .collection-sidebar,
-.app-window.background-transparent .filter-panel,
-.app-window.background-transparent .browser-toolbar,
-.app-window.background-transparent .statusbar {
-  background: var(--theme-surface) !important;
-}
-
-.app-window.background-transparent button,
-.app-window.background-transparent input,
-.app-window.background-transparent select,
-.app-window.background-transparent textarea,
-.app-window.background-transparent .setting-card,
-.app-window.background-transparent .theme-preset,
-.app-window.background-transparent .address-bar,
-.app-window.background-transparent .filter-search,
-.app-window.background-transparent .resource-filter,
-.app-window.background-transparent .header-section,
-.app-window.background-transparent .header-row,
-.app-window.background-transparent .kv-editor,
-.app-window.background-transparent .save-dialog {
-  background-color: var(--theme-surface) !important;
-}
-
-.app-window.background-image button,
-.app-window.background-image input,
-.app-window.background-image select,
-.app-window.background-image textarea,
-.app-window.background-image .setting-card,
-.app-window.background-image .theme-preset,
-.app-window.background-image .address-bar,
-.app-window.background-image .filter-search,
-.app-window.background-image .resource-filter,
-.app-window.background-image .header-section,
-.app-window.background-image .header-row,
-.app-window.background-image .kv-editor,
-.app-window.background-image .save-dialog {
-  background-color: var(--theme-image-surface) !important;
-  -webkit-backdrop-filter: blur(8px) saturate(1.1);
-  backdrop-filter: blur(8px) saturate(1.1);
-}
-
-.app-window.background-transparent .app-background,
-.app-window.background-transparent .window-titlebar,
-.app-window.background-transparent .app-shell,
-.app-window.background-transparent .topbar,
-.app-window.background-transparent .mode-rail,
-.app-window.background-transparent .workspace,
-.app-window.background-transparent .browser-pane,
-.app-window.background-transparent .network-panel,
-.app-window.background-transparent .filter-panel,
-.app-window.background-transparent .details,
-.app-window.background-transparent .details-panel,
-.app-window.background-transparent .settings-sidebar,
-.app-window.background-transparent .settings-page,
-.app-window.background-transparent .settings-page > *,
-.app-window.background-transparent .settings-view,
-.app-window.background-transparent .collection-view,
-.app-window.background-transparent .collection-sidebar,
-.app-window.background-transparent .collection-detail,
-.app-window.background-transparent .collection-content,
-.app-window.background-transparent .test-panel,
-.app-window.background-transparent .request-editor,
-.app-window.background-transparent .test-response,
-.app-window.background-transparent .browser-toolbar,
-.app-window.background-transparent .statusbar,
-.app-window.background-transparent button,
-.app-window.background-transparent input,
-.app-window.background-transparent select,
-.app-window.background-transparent textarea,
-.app-window.background-transparent .setting-card,
-.app-window.background-transparent .theme-preset,
-.app-window.background-transparent .address-bar,
-.app-window.background-transparent .filter-search,
-.app-window.background-transparent .resource-filter,
-.app-window.background-transparent .header-section,
-.app-window.background-transparent .header-row,
-.app-window.background-transparent .kv-editor,
-.app-window.background-transparent .save-dialog {
-  background: transparent !important;
-  background-color: transparent !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-
 @media (max-width: 1180px) {
   .workspace {
     grid-template-columns: minmax(420px, 1fr) 6px 360px;
@@ -2273,4 +2278,3 @@ button:hover {
     min-width: 128px;
   }
 }
-

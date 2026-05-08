@@ -1,14 +1,27 @@
 import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from 'node:zlib'
 import type { HeaderMap } from '../shared/types'
 
+export interface DecodedBody {
+  text: string
+  base64?: string
+}
+
 export function decodeBodyText(buffer: Buffer, headers: HeaderMap): string {
-  if (buffer.byteLength === 0) return ''
+  return decodeBody(buffer, headers).text
+}
+
+export function decodeBody(buffer: Buffer, headers: HeaderMap): DecodedBody {
+  if (buffer.byteLength === 0) return { text: '' }
   const contentType = headerToString(headers['content-type']).toLowerCase()
   const contentEncoding = headerToString(headers['content-encoding']).toLowerCase()
-  if (!isTextLikeContent(contentType)) return `[binary body: ${buffer.byteLength} bytes]`
-
   const decoded = decodeContentEncoding(buffer, contentEncoding)
-  return decodeText(decoded, contentType)
+  if ((contentType && !isTextLikeContent(contentType)) || (!contentType && looksBinary(decoded))) {
+    return {
+      text: `[binary body: ${decoded.byteLength} bytes]`,
+      base64: decoded.toString('base64')
+    }
+  }
+  return { text: decodeText(decoded, contentType) }
 }
 
 function isTextLikeContent(contentType: string): boolean {
@@ -70,6 +83,18 @@ function decodeText(buffer: Buffer, contentType: string): string {
   }
 
   return buffer.toString('utf8')
+}
+
+function looksBinary(buffer: Buffer): boolean {
+  if (buffer.byteLength === 0) return false
+  const sampleLength = Math.min(buffer.byteLength, 4096)
+  let controlBytes = 0
+  for (let index = 0; index < sampleLength; index += 1) {
+    const byte = buffer[index]
+    if (byte === 0) return true
+    if (byte < 7 || (byte > 13 && byte < 32)) controlBytes += 1
+  }
+  return controlBytes / sampleLength > 0.08
 }
 
 function extractCharset(contentType: string): string | undefined {

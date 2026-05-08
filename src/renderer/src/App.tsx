@@ -6,7 +6,7 @@ import json from 'highlight.js/lib/languages/json'
 import xml from 'highlight.js/lib/languages/xml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
 import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Folder, FolderOpen, Funnel, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
-import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CapturedExchange, CertificateStatus, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection, ThemeBackgroundMode } from '../../shared/types'
+import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection } from '../../shared/types'
 import './styles.css'
 
 type AppMode = 'capture' | 'collection' | 'settings'
@@ -16,9 +16,11 @@ type CodeLanguage = 'json' | 'javascript' | 'xml' | 'plaintext'
 type RequestEditorTab = 'query' | 'headers' | 'body'
 type ResponseViewerTab = 'headers' | 'body' | 'metrics'
 type SettingsCategory = 'startup' | 'browser' | 'theme'
+type CollectionSettingsTab = 'variables' | 'headers' | 'cookies' | 'user-agent'
 type ResourceFilter = 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
 type KeyValueRow = { id: string; key: string; value: string; enabled: boolean }
 type CaptureContextMenu = { capture: CapturedExchange; x: number; y: number }
+type CollectionContextMenu = { collection: SavedCollection; x: number; y: number }
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('json', json)
@@ -27,6 +29,7 @@ hljs.registerLanguage('plaintext', plaintext)
 
 const emptyStatus: ProxyStatus = {
   running: false,
+  capturePaused: false,
   host: '127.0.0.1',
   port: 8899,
   caCertPath: '',
@@ -65,6 +68,32 @@ const defaultAppSettings: AppSettings = {
   browserMode: 'embedded'
 }
 
+const defaultCollectionSettings: CollectionSettings = {
+  variables: {},
+  headers: {},
+  cookies: {},
+  userAgent: {
+    enabled: false,
+    preset: 'none',
+    value: ''
+  }
+}
+
+const userAgentPresets = [
+  { id: 'none', label: 'None', value: '' },
+  { id: 'chrome-mac', label: 'Chrome macOS', value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
+  { id: 'chrome-windows', label: 'Chrome Windows', value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
+  { id: 'safari-ios', label: 'Safari iPhone', value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1' },
+  { id: 'chrome-android', label: 'Chrome Android', value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36' }
+]
+
+const collectionSettingsTabs: Array<{ id: CollectionSettingsTab; label: string }> = [
+  { id: 'variables', label: 'Variables' },
+  { id: 'headers', label: 'Headers' },
+  { id: 'cookies', label: 'Cookies' },
+  { id: 'user-agent', label: 'User-Agent' }
+]
+
 const emptyTheme: AppTheme = {
   name: '',
   colors: {
@@ -100,13 +129,6 @@ const emptyTheme: AppTheme = {
     delete: { text: '', background: '' },
     head: { text: '', background: '' },
     options: { text: '', background: '' }
-  },
-  background: {
-    mode: 'solid',
-    opacity: 1,
-    imagePath: '',
-    imageOpacity: 0.45,
-    imageBrightness: 0.85
   }
 }
 
@@ -128,6 +150,8 @@ export default function App(): JSX.Element {
   const [selectedId, setSelectedId] = useState<string>()
   const [selectedCollectionId, setSelectedCollectionId] = useState<string>()
   const [selectedSavedApiId, setSelectedSavedApiId] = useState<string>()
+  const [openSavedApiIds, setOpenSavedApiIds] = useState<string[]>([])
+  const [draggingSavedApiId, setDraggingSavedApiId] = useState<string>()
   const [expandedCollectionIds, setExpandedCollectionIds] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   const [showFilterPanel, setShowFilterPanel] = useState(false)
@@ -137,11 +161,21 @@ export default function App(): JSX.Element {
   const [activeMode, setActiveMode] = useState<AppMode>('capture')
   const [tab, setTab] = useState<DetailTab>('headers')
   const [headerMode, setHeaderMode] = useState<HeaderMode>('table')
+  const [detailSearch, setDetailSearch] = useState('')
   const [saveTarget, setSaveTarget] = useState<CapturedExchange>()
   const [saveName, setSaveName] = useState('')
   const [saveTags, setSaveTags] = useState('')
   const [saveCollectionName, setSaveCollectionName] = useState('Default')
   const [contextMenu, setContextMenu] = useState<CaptureContextMenu>()
+  const [collectionContextMenu, setCollectionContextMenu] = useState<CollectionContextMenu>()
+  const [collectionSettingsTarget, setCollectionSettingsTarget] = useState<SavedCollection>()
+  const [collectionVariableRows, setCollectionVariableRows] = useState<KeyValueRow[]>([])
+  const [collectionHeaderRows, setCollectionHeaderRows] = useState<KeyValueRow[]>([])
+  const [collectionCookieRows, setCollectionCookieRows] = useState<KeyValueRow[]>([])
+  const [collectionUaEnabled, setCollectionUaEnabled] = useState(false)
+  const [collectionUaPreset, setCollectionUaPreset] = useState('none')
+  const [collectionUaValue, setCollectionUaValue] = useState('')
+  const [collectionSettingsTab, setCollectionSettingsTab] = useState<CollectionSettingsTab>('variables')
   const [showBrowser, setShowBrowser] = useState(true)
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings)
   const [theme, setTheme] = useState<AppTheme>(emptyTheme)
@@ -218,6 +252,11 @@ export default function App(): JSX.Element {
     return captures.find((capture) => capture.id === selectedId && (showBrowserTraffic || capture.source !== 'browser'))
   }, [captures, selectedId, showBrowserTraffic])
 
+  const detailSearchCount = useMemo(() => {
+    if (!selected || !detailSearch.trim()) return 0
+    return countOccurrences(detailSearchText(selected, tab, headerMode), detailSearch)
+  }, [detailSearch, headerMode, selected, tab])
+
   const filteredCaptures = useMemo(() => {
     const needle = query.trim().toLowerCase()
     const sourceFiltered = showBrowserTraffic ? captures : captures.filter((capture) => capture.source !== 'browser')
@@ -247,14 +286,20 @@ export default function App(): JSX.Element {
     return collections.find((collection) => collection.id === selectedCollectionId) || collections[0]
   }, [collections, selectedCollectionId])
 
-  const filteredSavedApis = useMemo(() => {
-    if (!selectedCollection) return []
-    return savedApis.filter((api) => api.collectionId === selectedCollection.id)
-  }, [savedApis, selectedCollection])
+  const openSavedApis = useMemo(() => {
+    return openSavedApiIds
+      .map((id) => savedApis.find((api) => api.id === id))
+      .filter((api): api is SavedApi => Boolean(api))
+  }, [openSavedApiIds, savedApis])
 
   const selectedSavedApi = useMemo(() => {
-    return savedApis.find((api) => api.id === selectedSavedApiId) || filteredSavedApis[0]
-  }, [filteredSavedApis, savedApis, selectedSavedApiId])
+    return savedApis.find((api) => api.id === selectedSavedApiId)
+  }, [savedApis, selectedSavedApiId])
+
+  const selectedSavedApiCollection = useMemo(() => {
+    if (!selectedSavedApi) return undefined
+    return collections.find((collection) => collection.id === selectedSavedApi.collectionId)
+  }, [collections, selectedSavedApi])
 
   useEffect(() => {
     if (!selectedCollectionId && collections.length > 0) {
@@ -262,6 +307,17 @@ export default function App(): JSX.Element {
       setExpandedCollectionIds((current) => new Set([...current, collections[0].id]))
     }
   }, [collections, selectedCollectionId])
+
+  useEffect(() => {
+    setOpenSavedApiIds((current) => current.filter((id) => savedApis.some((api) => api.id === id)))
+    setSelectedSavedApiId((current) => current && savedApis.some((api) => api.id === current) ? current : undefined)
+  }, [savedApis])
+
+  useEffect(() => {
+    if (!selectedSavedApi) return
+    setOpenSavedApiIds((current) => current.includes(selectedSavedApi.id) ? current : [...current, selectedSavedApi.id])
+    setSelectedSavedApiId((current) => current || selectedSavedApi.id)
+  }, [selectedSavedApi])
 
   useEffect(() => {
     if (selected) return
@@ -343,6 +399,11 @@ export default function App(): JSX.Element {
     setSelectedId(undefined)
   }
 
+  async function toggleCapturePaused(): Promise<void> {
+    const nextStatus = await window.steal.setCapturePaused(!status.capturePaused)
+    setStatus(nextStatus)
+  }
+
   async function updateAppSettings(patch: Partial<AppSettings>): Promise<void> {
     const nextSettings = await window.steal.updateSettings(patch)
     setSettings(nextSettings)
@@ -374,23 +435,6 @@ export default function App(): JSX.Element {
     } finally {
       setThemeSaving(false)
     }
-  }
-
-  async function updateThemeBackground(patch: Partial<AppTheme['background']>): Promise<void> {
-    await saveTheme({ ...theme, background: { ...theme.background, ...patch } })
-  }
-
-  async function selectBackgroundMode(mode: ThemeBackgroundMode): Promise<void> {
-    const patch: Partial<AppTheme['background']> = { mode }
-    if (mode === 'transparent') patch.opacity = 0
-    if (mode === 'solid' && theme.background.opacity < 1) patch.opacity = 1
-    await updateThemeBackground(patch)
-  }
-
-  async function chooseBackgroundImage(): Promise<void> {
-    const imagePath = await window.steal.chooseThemeImage()
-    if (!imagePath) return
-    await updateThemeBackground({ mode: 'image', imagePath })
   }
 
   async function resetTheme(): Promise<void> {
@@ -469,6 +513,41 @@ export default function App(): JSX.Element {
     setSaveCollectionName(collections[0]?.name || 'Default')
   }
 
+  function openSavedApi(api: SavedApi): void {
+    setSelectedCollectionId(api.collectionId)
+    setSelectedSavedApiId(api.id)
+    setOpenSavedApiIds((current) => current.includes(api.id) ? current : [...current, api.id])
+    setExpandedCollectionIds((current) => new Set([...current, api.collectionId]))
+  }
+
+  function closeSavedApiTab(apiId: string): void {
+    setOpenSavedApiIds((current) => {
+      const index = current.indexOf(apiId)
+      const next = current.filter((id) => id !== apiId)
+      if (selectedSavedApiId === apiId) {
+        const fallbackId = next[Math.min(index, next.length - 1)]
+        setSelectedSavedApiId(fallbackId)
+        const fallbackApi = savedApis.find((api) => api.id === fallbackId)
+        if (fallbackApi) setSelectedCollectionId(fallbackApi.collectionId)
+      }
+      return next
+    })
+  }
+
+  function moveSavedApiTab(sourceId: string, targetId: string): void {
+    if (sourceId === targetId) return
+    setOpenSavedApiIds((current) => {
+      const sourceIndex = current.indexOf(sourceId)
+      const targetIndex = current.indexOf(targetId)
+      if (sourceIndex === -1 || targetIndex === -1) return current
+
+      const next = [...current]
+      const [movedId] = next.splice(sourceIndex, 1)
+      next.splice(targetIndex, 0, movedId)
+      return next
+    })
+  }
+
   async function copyCaptureUrl(capture: CapturedExchange): Promise<void> {
     await window.steal.copyText(capture.url)
     setMessage('Copied URL')
@@ -477,6 +556,35 @@ export default function App(): JSX.Element {
   async function copyCaptureAsCurl(capture: CapturedExchange): Promise<void> {
     await window.steal.copyText(captureToCurl(capture))
     setMessage('Copied as cURL')
+  }
+
+  function openCollectionSettings(collection: SavedCollection): void {
+    const settings = collection.settings || defaultCollectionSettings
+    setCollectionSettingsTarget(collection)
+    setCollectionVariableRows(mapToRows(settings.variables))
+    setCollectionHeaderRows(mapToRows(settings.headers))
+    setCollectionCookieRows(mapToRows(settings.cookies))
+    setCollectionUaEnabled(settings.userAgent.enabled)
+    setCollectionUaPreset(settings.userAgent.preset || 'none')
+    setCollectionUaValue(settings.userAgent.value || userAgentPresets.find((preset) => preset.id === settings.userAgent.preset)?.value || '')
+    setCollectionSettingsTab('variables')
+  }
+
+  async function saveCollectionSettings(): Promise<void> {
+    if (!collectionSettingsTarget) return
+    const nextCollections = await window.steal.updateCollectionSettings(collectionSettingsTarget.id, {
+      variables: rowsToObject(collectionVariableRows),
+      headers: rowsToObject(collectionHeaderRows),
+      cookies: rowsToObject(collectionCookieRows),
+      userAgent: {
+        enabled: collectionUaEnabled,
+        preset: collectionUaPreset,
+        value: collectionUaValue
+      }
+    })
+    setCollections(nextCollections)
+    setCollectionSettingsTarget(undefined)
+    setMessage(`Updated ${collectionSettingsTarget.name} settings`)
   }
 
   async function saveCapturedApi(): Promise<void> {
@@ -490,6 +598,7 @@ export default function App(): JSX.Element {
     setSavedApis(nextSavedApis)
     setSelectedCollectionId(saved.collectionId)
     setSelectedSavedApiId(saved.id)
+    setOpenSavedApiIds((current) => current.includes(saved.id) ? current : [...current, saved.id])
     setExpandedCollectionIds((current) => new Set([...current, saved.collectionId]))
     setMessage(`Saved ${saved.name} to ${saved.collectionName}`)
     setSaveTarget(undefined)
@@ -500,11 +609,15 @@ export default function App(): JSX.Element {
     setTestError('')
     setTestResult(undefined)
     try {
+      const collectionSettings = selectedSavedApiCollection?.settings || selectedCollection?.settings || defaultCollectionSettings
+      const variables = collectionSettings.variables || {}
+      const requestHeaders = rowsToObject(applyVariablesToRows(testHeaderRows, variables))
+      const headers = buildCollectionHeaders(collectionSettings, requestHeaders)
       const result = await window.steal.replay({
         ...testRequest,
-        url: buildUrlWithQueryRows(testRequest.url, testQueryRows),
-        headers: rowsToObject(testHeaderRows),
-        body: rowsToBody(testBodyRows, testBodyMode)
+        url: expandVariables(buildUrlWithQueryRows(testRequest.url, applyVariablesToRows(testQueryRows, variables)), variables),
+        headers,
+        body: expandVariables(rowsToBody(applyVariablesToRows(testBodyRows, variables), testBodyMode), variables)
       })
       setTestResult(result)
     } catch (error) {
@@ -534,8 +647,7 @@ export default function App(): JSX.Element {
   }
 
   return (
-    <div className={`app-window platform-${platform || 'loading'} background-${theme.background.mode}`}>
-      <div className="app-background" aria-hidden="true" />
+    <div className={`app-window platform-${platform || 'loading'}`}>
       <header className="window-titlebar">
         <div className="window-drag-region">
           <div className="window-brand">
@@ -687,6 +799,13 @@ export default function App(): JSX.Element {
                   >
                     <Funnel size={15} />
                   </button>
+                  <button
+                    className={status.capturePaused ? 'capture-pause active' : 'capture-pause'}
+                    title={status.capturePaused ? 'Resume capture logging' : 'Pause capture logging'}
+                    onClick={() => void toggleCapturePaused()}
+                  >
+                    {status.capturePaused ? <Play size={15} /> : <Pause size={15} />}
+                  </button>
                   <button title="Clear captures" onClick={clearCaptures}><Trash2 size={15} /></button>
                 </div>
               </div>
@@ -793,16 +912,45 @@ export default function App(): JSX.Element {
                   {(['headers', 'body', 'response'] as DetailTab[]).map((item) => (
                     <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>
                   ))}
+                  <label className="detail-search">
+                    <Search size={14} />
+                    <input
+                      value={detailSearch}
+                      placeholder="Search details"
+                      onChange={(event) => setDetailSearch(event.target.value)}
+                    />
+                    {detailSearch.trim() && <span>{detailSearchCount}</span>}
+                    {detailSearch && (
+                      <button title="Clear detail search" onClick={() => setDetailSearch('')}>
+                        <X size={13} />
+                      </button>
+                    )}
+                  </label>
                 </div>
                 {tab === 'headers' && (
                   <HeadersPanel
                     exchange={selected}
                     mode={headerMode}
                     onModeChange={setHeaderMode}
+                    searchQuery={detailSearch}
                   />
                 )}
-                {tab === 'body' && <CodeBlock value={selected.requestBody || '(empty request body)'} language={languageFromBody(selected.requestBody, selected.requestHeaders['content-type'])} />}
-                {tab === 'response' && <CodeBlock value={selected.responseBody || '(empty response body)'} language={languageFromBody(selected.responseBody, selected.responseHeaders['content-type'])} />}
+                {tab === 'body' && (
+                  <BodyViewer
+                    value={selected.requestBody || '(empty request body)'}
+                    base64={selected.requestBodyBase64}
+                    contentType={selected.requestHeaders['content-type']}
+                    searchQuery={detailSearch}
+                  />
+                )}
+                {tab === 'response' && (
+                  <BodyViewer
+                    value={selected.responseBody || '(empty response body)'}
+                    base64={selected.responseBodyBase64}
+                    contentType={selected.responseHeaders['content-type']}
+                    searchQuery={detailSearch}
+                  />
+                )}
               </>
             ) : (
               <div className="empty-state">Open a URL or configure another app to use the local proxy.</div>
@@ -827,6 +975,11 @@ export default function App(): JSX.Element {
                       setSelectedCollectionId(collection.id)
                       toggleCollection(collection.id)
                     }}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      setSelectedCollectionId(collection.id)
+                      setCollectionContextMenu({ collection, x: event.clientX, y: event.clientY })
+                    }}
                   >
                     <ChevronRight className={expandedCollectionIds.has(collection.id) ? 'tree-chevron open' : 'tree-chevron'} size={15} />
                     {expandedCollectionIds.has(collection.id) ? <FolderOpen size={15} /> : <Folder size={15} />}
@@ -840,8 +993,7 @@ export default function App(): JSX.Element {
                           key={api.id}
                           className={selectedSavedApi?.id === api.id ? 'tree-api-item active' : 'tree-api-item'}
                           onClick={() => {
-                            setSelectedCollectionId(collection.id)
-                            setSelectedSavedApiId(api.id)
+                            openSavedApi(api)
                           }}
                         >
                           <span className={`method ${api.exchange.method.toLowerCase()}`}>{api.exchange.method}</span>
@@ -860,6 +1012,69 @@ export default function App(): JSX.Element {
           <aside className="details collection-details">
             {selectedSavedApi ? (
               <>
+                <div className="api-tab-bar">
+                  {openSavedApis.map((api) => (
+                    <div
+                      key={api.id}
+                      className={[
+                        'api-tab',
+                        selectedSavedApi.id === api.id ? 'active' : '',
+                        draggingSavedApiId === api.id ? 'dragging' : ''
+                      ].filter(Boolean).join(' ')}
+                      draggable
+                      role="button"
+                      tabIndex={0}
+                      onDragStart={(event) => {
+                        setDraggingSavedApiId(api.id)
+                        event.dataTransfer.effectAllowed = 'move'
+                        event.dataTransfer.setData('text/plain', api.id)
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault()
+                        const sourceId = draggingSavedApiId || event.dataTransfer.getData('text/plain')
+                        if (sourceId) moveSavedApiTab(sourceId, api.id)
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault()
+                        const sourceId = draggingSavedApiId || event.dataTransfer.getData('text/plain')
+                        if (sourceId) moveSavedApiTab(sourceId, api.id)
+                        setDraggingSavedApiId(undefined)
+                      }}
+                      onDragEnd={() => setDraggingSavedApiId(undefined)}
+                      onClick={() => {
+                        setSelectedSavedApiId(api.id)
+                        setSelectedCollectionId(api.collectionId)
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        setSelectedSavedApiId(api.id)
+                        setSelectedCollectionId(api.collectionId)
+                      }}
+                    >
+                      <span className={`method ${api.exchange.method.toLowerCase()}`}>{api.exchange.method}</span>
+                      <strong>{api.name}</strong>
+                      <span
+                        className="api-tab-close"
+                        role="button"
+                        tabIndex={0}
+                        title="Close tab"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          closeSavedApiTab(api.id)
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return
+                          event.preventDefault()
+                          event.stopPropagation()
+                          closeSavedApiTab(api.id)
+                        }}
+                      >
+                        <X size={13} />
+                      </span>
+                    </div>
+                  ))}
+                </div>
                 <div className="detail-title">
                   <span className={`method ${selectedSavedApi.exchange.method.toLowerCase()}`}>{selectedSavedApi.exchange.method}</span>
                   <strong>{selectedSavedApi.name}</strong>
@@ -912,7 +1127,13 @@ export default function App(): JSX.Element {
                       {testResult ? (
                         <>
                           {responseTab === 'headers' && <HeadersTable headers={testResult.headers} />}
-                          {responseTab === 'body' && <CodeBlock value={testResult.body || '(empty response body)'} language={languageFromBody(testResult.body, testResult.headers['content-type'])} />}
+                          {responseTab === 'body' && (
+                            <BodyViewer
+                              value={testResult.body || '(empty response body)'}
+                              base64={testResult.bodyBase64}
+                              contentType={testResult.headers['content-type']}
+                            />
+                          )}
                           {responseTab === 'metrics' && <MetricsPanel result={testResult} />}
                         </>
                       ) : (
@@ -959,6 +1180,25 @@ export default function App(): JSX.Element {
               }}
             >
               URLをコピー
+            </button>
+          </div>
+        </div>
+      )}
+
+      {collectionContextMenu && (
+        <div className="context-menu-backdrop" onMouseDown={() => setCollectionContextMenu(undefined)}>
+          <div
+            className="capture-context-menu"
+            style={{ left: collectionContextMenu.x, top: collectionContextMenu.y }}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              onClick={() => {
+                openCollectionSettings(collectionContextMenu.collection)
+                setCollectionContextMenu(undefined)
+              }}
+            >
+              設定
             </button>
           </div>
         </div>
@@ -1110,65 +1350,119 @@ export default function App(): JSX.Element {
                     </button>
                   ))}
                 </div>
-                <div className="setting-card background-card">
-                  <div>
-                    <strong>Custom background</strong>
-                    <span>Choose a solid, transparent, or image background. Values are saved in theme.json.</span>
-                  </div>
-                  <div className="background-controls">
-                    <div className="mode-choice">
-                      {(['solid', 'transparent', 'image'] as const).map((mode) => (
-                        <button
-                          key={mode}
-                          className={theme.background.mode === mode ? 'active' : ''}
-                          onClick={() => void selectBackgroundMode(mode)}
-                        >
-                          {mode === 'solid' ? 'Solid' : mode === 'transparent' ? 'Transparent' : 'Image'}
-                        </button>
-                      ))}
-                    </div>
-                    <label className="range-control">
-                      <span>Opacity</span>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={theme.background.opacity}
-                        onChange={(event) => void updateThemeBackground({ opacity: Number(event.target.value) })}
-                      />
-                    </label>
-                    <button onClick={() => void chooseBackgroundImage()}>Choose image</button>
-                    <label className="range-control">
-                      <span>Image opacity</span>
-                      <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.05"
-                        value={theme.background.imageOpacity}
-                        disabled={theme.background.mode !== 'image'}
-                        onChange={(event) => void updateThemeBackground({ imageOpacity: Number(event.target.value) })}
-                      />
-                    </label>
-                    <label className="range-control">
-                      <span>Image brightness</span>
-                      <input
-                        type="range"
-                        min="0.2"
-                        max="1.6"
-                        step="0.05"
-                        value={theme.background.imageBrightness}
-                        disabled={theme.background.mode !== 'image'}
-                        onChange={(event) => void updateThemeBackground({ imageBrightness: Number(event.target.value) })}
-                      />
-                    </label>
-                  </div>
-                </div>
               </>
             )}
           </section>
         </section>
+      )}
+
+      {collectionSettingsTarget && (
+        <div className="modal-backdrop" onMouseDown={() => setCollectionSettingsTarget(undefined)}>
+          <section className="save-dialog collection-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="collection-settings-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="save-dialog-header">
+              <div>
+                <strong id="collection-settings-title">{collectionSettingsTarget.name} Settings</strong>
+                <span>Use variables with {'{{ name }}'} inside URL, headers, cookies, and body.</span>
+              </div>
+              <button title="Close" onClick={() => setCollectionSettingsTarget(undefined)}><X size={16} /></button>
+            </div>
+            <div className="collection-settings-layout">
+              <aside className="collection-settings-tabs">
+                {collectionSettingsTabs.map((item) => (
+                  <button
+                    key={item.id}
+                    className={collectionSettingsTab === item.id ? 'settings-category active' : 'settings-category'}
+                    onClick={() => setCollectionSettingsTab(item.id)}
+                  >
+                    <strong>{item.label}</strong>
+                  </button>
+                ))}
+              </aside>
+              <div className="collection-settings-page">
+                {collectionSettingsTab === 'variables' && (
+                  <>
+                    <div className="collection-settings-page-title">
+                      <strong>Variables</strong>
+                      <span>Use values like {'{{ token }}'} or {'{{ baseUrl }}'} in URLs, query parameters, headers, cookies, and body.</span>
+                    </div>
+                    <KeyValueEditor title="Variables" rows={collectionVariableRows} keyPlaceholder="name" valuePlaceholder="Value" onChange={setCollectionVariableRows} />
+                  </>
+                )}
+                {collectionSettingsTab === 'headers' && (
+                  <>
+                    <div className="collection-settings-page-title">
+                      <strong>Common Headers</strong>
+                      <span>These headers are added before each request. Per-request headers with the same name take priority.</span>
+                    </div>
+                    <KeyValueEditor title="Headers" rows={collectionHeaderRows} keyPlaceholder="Header" valuePlaceholder="Value" onChange={setCollectionHeaderRows} />
+                  </>
+                )}
+                {collectionSettingsTab === 'cookies' && (
+                  <>
+                    <div className="collection-settings-page-title">
+                      <strong>Common Cookies</strong>
+                      <span>Cookies are joined into the Cookie header and can also use variables.</span>
+                    </div>
+                    <KeyValueEditor title="Cookies" rows={collectionCookieRows} keyPlaceholder="Cookie" valuePlaceholder="Value" onChange={setCollectionCookieRows} />
+                  </>
+                )}
+                {collectionSettingsTab === 'user-agent' && (
+                  <>
+                    <div className="collection-settings-page-title inline">
+                      <div>
+                        <strong>User-Agent</strong>
+                        <span>Override the User-Agent for every request in this collection.</span>
+                      </div>
+                      <button className={collectionUaEnabled ? 'system-proxy-toggle active' : 'system-proxy-toggle'} onClick={() => setCollectionUaEnabled((current) => !current)}>
+                        {collectionUaEnabled ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+                    <section className="ua-settings">
+                      <div className="ua-controls">
+                        <label>
+                          Preset
+                          <select
+                            value={collectionUaPreset}
+                            onChange={(event) => {
+                              const preset = userAgentPresets.find((item) => item.id === event.target.value)
+                              setCollectionUaPreset(event.target.value)
+                              if (event.target.value === 'custom') {
+                                setCollectionUaEnabled(true)
+                                return
+                              }
+                              setCollectionUaEnabled(event.target.value !== 'none')
+                              setCollectionUaValue(preset?.value || '')
+                            }}
+                          >
+                            {userAgentPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                            <option value="custom">Custom</option>
+                          </select>
+                        </label>
+                        <label>
+                          Value
+                          <textarea
+                            value={collectionUaValue}
+                            disabled={!collectionUaEnabled && collectionUaPreset !== 'custom'}
+                            onChange={(event) => {
+                              setCollectionUaPreset('custom')
+                              setCollectionUaEnabled(true)
+                              setCollectionUaValue(event.target.value)
+                            }}
+                            placeholder="User-Agent"
+                          />
+                        </label>
+                      </div>
+                    </section>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="save-dialog-actions">
+              <button onClick={() => setCollectionSettingsTarget(undefined)}>Cancel</button>
+              <button className="primary-action" onClick={() => void saveCollectionSettings()}>Save Settings</button>
+            </div>
+          </section>
+        </div>
       )}
 
       {saveTarget && (
@@ -1252,34 +1546,12 @@ function startDocumentDrag(cursor: 'col-resize' | 'row-resize', onMove: (event: 
 
 function applyTheme(theme: AppTheme): void {
   const root = document.documentElement
-  void window.steal.applyThemeBackground(theme.background)
   for (const [key, value] of Object.entries(theme.colors)) {
     root.style.setProperty(`--theme-${kebabCase(key)}`, value)
   }
   for (const [method, value] of Object.entries(theme.methods)) {
     root.style.setProperty(`--theme-method-${method}-text`, value.text)
     root.style.setProperty(`--theme-method-${method}-background`, value.background)
-  }
-  root.style.setProperty('--theme-background-opacity', String(theme.background.opacity))
-  root.style.setProperty('--theme-background-image-opacity', String(theme.background.imageOpacity))
-  root.style.setProperty('--theme-background-image-brightness', String(theme.background.imageBrightness))
-  root.style.setProperty('--theme-transparent-surface', colorWithAlpha(theme.colors.surface, 0.22))
-  root.style.setProperty('--theme-image-surface', colorWithAlpha(theme.colors.surface, 0.58))
-  root.style.setProperty('--theme-transparent-subtle', colorWithAlpha(theme.colors.surfaceSubtle, 0.18))
-  root.style.setProperty('--theme-image-subtle', colorWithAlpha(theme.colors.surfaceSubtle, 0.48))
-  root.style.setProperty('--theme-background-image', 'none')
-  if (theme.background.mode === 'image' && theme.background.imagePath) {
-    root.dataset.themeImagePath = theme.background.imagePath
-    void window.steal.getThemeImageDataUrl(theme.background.imagePath).then((dataUrl) => {
-      if (root.dataset.themeImagePath !== theme.background.imagePath) return
-      if (!dataUrl) {
-        console.warn(`Theme background image could not be loaded: ${theme.background.imagePath}`)
-        return
-      }
-      root.style.setProperty('--theme-background-image', `url("${dataUrl}")`)
-    })
-  } else {
-    delete root.dataset.themeImagePath
   }
 }
 
@@ -1334,11 +1606,13 @@ function SettingToggle({
 function HeadersPanel({
   exchange,
   mode,
-  onModeChange
+  onModeChange,
+  searchQuery
 }: {
   exchange: CapturedExchange
   mode: HeaderMode
   onModeChange: (mode: HeaderMode) => void
+  searchQuery: string
 }): JSX.Element {
   return (
     <div className="headers-panel">
@@ -1349,18 +1623,20 @@ function HeadersPanel({
         </div>
       </div>
       {mode === 'raw' ? (
-        <CodeBlock value={headersView(exchange)} language="json" />
+        <CodeBlock value={headersView(exchange)} language="json" searchQuery={searchQuery} />
       ) : (
         <div className="headers-table-scroll">
           <HeaderSection
             title="Request Headers"
             summary={`${exchange.method} ${exchange.url}`}
             headers={exchange.requestHeaders}
+            searchQuery={searchQuery}
           />
           <HeaderSection
             title="Response Headers"
             summary={`${exchange.responseStatusCode || '-'} ${exchange.responseStatusMessage || ''}`.trim()}
             headers={exchange.responseHeaders}
+            searchQuery={searchQuery}
           />
         </div>
       )}
@@ -1371,11 +1647,13 @@ function HeadersPanel({
 function HeaderSection({
   title,
   summary,
-  headers
+  headers,
+  searchQuery
 }: {
   title: string
   summary: string
   headers: CapturedExchange['requestHeaders']
+  searchQuery: string
 }): JSX.Element {
   const rows = Object.entries(headers).sort(([left], [right]) => left.localeCompare(right))
 
@@ -1392,8 +1670,8 @@ function HeaderSection({
         </div>
         {rows.length > 0 ? rows.map(([name, value]) => (
           <div className="header-row" role="row" key={name}>
-            <code role="cell">{name}</code>
-            <span role="cell">{headerValueToString(value)}</span>
+            <code role="cell"><HighlightedText value={name} query={searchQuery} /></code>
+            <span role="cell"><HighlightedText value={headerValueToString(value)} query={searchQuery} /></span>
           </div>
         )) : (
           <div className="header-empty">No headers captured.</div>
@@ -1485,8 +1763,81 @@ function MetricsPanel({ result }: { result: ReplayResult }): JSX.Element {
   )
 }
 
-function CodeBlock({ value, language }: { value: string; language?: CodeLanguage }): JSX.Element {
-  const highlighted = useMemo(() => highlightCode(value, language), [value, language])
+function BodyViewer({
+  value,
+  base64,
+  contentType,
+  searchQuery = ''
+}: {
+  value: string
+  base64?: string
+  contentType?: string | string[]
+  searchQuery?: string
+}): JSX.Element {
+  if (base64) return <BinaryViewer base64={base64} contentType={contentType} fallbackLabel={value} searchQuery={searchQuery} />
+  return <CodeBlock value={value} language={languageFromBody(value, contentType)} searchQuery={searchQuery} />
+}
+
+function BinaryViewer({
+  base64,
+  contentType,
+  fallbackLabel,
+  searchQuery
+}: {
+  base64: string
+  contentType?: string | string[]
+  fallbackLabel: string
+  searchQuery: string
+}): JSX.Element {
+  const bytes = useMemo(() => bytesFromBase64(base64), [base64])
+  const rows = useMemo(() => makeHexRows(bytes), [bytes])
+  const normalizedContentType = Array.isArray(contentType) ? contentType.join(', ') : contentType || 'application/octet-stream'
+  const imageContentType = imageMimeType(contentType)
+  const imageSrc = imageContentType ? `data:${imageContentType};base64,${base64}` : undefined
+
+  if (!bytes) return <CodeBlock value={fallbackLabel} language="plaintext" />
+
+  return (
+    <div className="binary-viewer">
+      <div className="binary-toolbar">
+        <strong>{imageSrc ? 'Image' : 'Binary'}</strong>
+        <span>{formatBytes(bytes.length)}</span>
+        <span>{normalizedContentType}</span>
+      </div>
+      {imageSrc && (
+        <div className="image-preview">
+          <img src={imageSrc} alt="Captured binary image preview" />
+        </div>
+      )}
+      <div className="binary-table" role="table" aria-label="Binary body hex view">
+        <div className="binary-row binary-heading" role="row">
+          <span>Offset</span>
+          <span>Hex</span>
+          <span>ASCII</span>
+        </div>
+        {rows.map((row) => (
+          <div className="binary-row" role="row" key={row.offset}>
+            <code className="binary-offset">{row.offset}</code>
+            <code className="binary-hex"><HighlightedText value={row.hex} query={searchQuery} /></code>
+            <code className="binary-ascii"><HighlightedText value={row.ascii} query={searchQuery} /></code>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function imageMimeType(contentType?: string | string[]): string | undefined {
+  const normalized = Array.isArray(contentType) ? contentType.join(';').toLowerCase() : (contentType || '').toLowerCase()
+  const match = normalized.match(/image\/(?:png|jpe?g|gif|webp|avif|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon)/)
+  if (!match) return undefined
+  if (match[0] === 'image/jpg') return 'image/jpeg'
+  if (match[0] === 'image/x-icon' || match[0] === 'image/vnd.microsoft.icon') return 'image/x-icon'
+  return match[0]
+}
+
+function CodeBlock({ value, language, searchQuery = '' }: { value: string; language?: CodeLanguage; searchQuery?: string }): JSX.Element {
+  const highlighted = useMemo(() => highlightCode(value, language, searchQuery), [value, language, searchQuery])
 
   return (
     <pre className="code-block">
@@ -1498,8 +1849,86 @@ function CodeBlock({ value, language }: { value: string; language?: CodeLanguage
   )
 }
 
-function highlightCode(value: string, language?: CodeLanguage): { html: string; language: CodeLanguage } {
+function bytesFromBase64(value: string): Uint8Array | undefined {
+  try {
+    const binary = atob(value)
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index)
+    }
+    return bytes
+  } catch {
+    return undefined
+  }
+}
+
+function makeHexRows(bytes: Uint8Array | undefined): Array<{ offset: string; hex: string; ascii: string }> {
+  if (!bytes) return []
+  const rows: Array<{ offset: string; hex: string; ascii: string }> = []
+  for (let offset = 0; offset < bytes.length; offset += 16) {
+    const chunk = bytes.slice(offset, offset + 16)
+    const hex = Array.from(chunk)
+      .map((byte) => byte.toString(16).padStart(2, '0').toUpperCase())
+      .join(' ')
+      .padEnd(47, ' ')
+    const ascii = Array.from(chunk)
+      .map((byte) => (byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : '.'))
+      .join('')
+    rows.push({
+      offset: offset.toString(16).padStart(8, '0').toUpperCase(),
+      hex,
+      ascii
+    })
+  }
+  return rows
+}
+
+function HighlightedText({ value, query }: { value: string; query: string }): JSX.Element {
+  const needle = query.trim()
+  if (!needle) return <>{value}</>
+  const lowerValue = value.toLowerCase()
+  const lowerNeedle = needle.toLowerCase()
+  const parts: JSX.Element[] = []
+  let cursor = 0
+  let matchIndex = lowerValue.indexOf(lowerNeedle)
+  while (matchIndex !== -1) {
+    if (matchIndex > cursor) parts.push(<span key={`t-${cursor}`}>{value.slice(cursor, matchIndex)}</span>)
+    const end = matchIndex + needle.length
+    parts.push(<mark key={`m-${matchIndex}`}>{value.slice(matchIndex, end)}</mark>)
+    cursor = end
+    matchIndex = lowerValue.indexOf(lowerNeedle, cursor)
+  }
+  if (cursor < value.length) parts.push(<span key={`t-${cursor}`}>{value.slice(cursor)}</span>)
+  return <>{parts}</>
+}
+
+function highlightSearchHtml(value: string, query: string): string {
+  const needle = query.trim()
+  if (!needle) return escapeHtml(value)
+  const lowerValue = value.toLowerCase()
+  const lowerNeedle = needle.toLowerCase()
+  const chunks: string[] = []
+  let cursor = 0
+  let matchIndex = lowerValue.indexOf(lowerNeedle)
+  while (matchIndex !== -1) {
+    chunks.push(escapeHtml(value.slice(cursor, matchIndex)))
+    const end = matchIndex + needle.length
+    chunks.push(`<mark>${escapeHtml(value.slice(matchIndex, end))}</mark>`)
+    cursor = end
+    matchIndex = lowerValue.indexOf(lowerNeedle, cursor)
+  }
+  chunks.push(escapeHtml(value.slice(cursor)))
+  return chunks.join('')
+}
+
+function highlightCode(value: string, language?: CodeLanguage, searchQuery = ''): { html: string; language: CodeLanguage } {
   const detectedLanguage = language || languageFromBody(value)
+  if (searchQuery.trim()) {
+    return {
+      html: highlightSearchHtml(value, searchQuery),
+      language: 'plaintext'
+    }
+  }
 
   try {
     return {
@@ -1592,6 +2021,47 @@ function headersView(capture: CapturedExchange): string {
   ].join('\n')
 }
 
+function detailSearchText(exchange: CapturedExchange, tab: DetailTab, headerMode: HeaderMode): string {
+  if (tab === 'headers') return headerMode === 'raw' ? headersView(exchange) : [
+    exchange.method,
+    exchange.url,
+    headerTableSearchText(exchange.requestHeaders),
+    exchange.responseStatusCode,
+    exchange.responseStatusMessage,
+    headerTableSearchText(exchange.responseHeaders)
+  ].join('\n')
+  if (tab === 'body') return bodySearchText(exchange.requestBody, exchange.requestBodyBase64)
+  return bodySearchText(exchange.responseBody, exchange.responseBodyBase64)
+}
+
+function headerTableSearchText(headers: CapturedExchange['requestHeaders']): string {
+  return Object.entries(headers)
+    .map(([key, value]) => `${key}: ${headerValueToString(value)}`)
+    .join('\n')
+}
+
+function bodySearchText(value: string, base64?: string): string {
+  if (!base64) return value
+  const rows = makeHexRows(bytesFromBase64(base64))
+  return [
+    value,
+    ...rows.map((row) => `${row.offset} ${row.hex} ${row.ascii}`)
+  ].join('\n')
+}
+
+function countOccurrences(value: string, query: string): number {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return 0
+  const haystack = value.toLowerCase()
+  let count = 0
+  let cursor = haystack.indexOf(needle)
+  while (cursor !== -1) {
+    count += 1
+    cursor = haystack.indexOf(needle, cursor + needle.length)
+  }
+  return count
+}
+
 function captureToCurl(capture: CapturedExchange): string {
   const parts = ['curl', '-X', shellQuote(capture.method), shellQuote(capture.url)]
   const blockedHeaders = new Set(['content-length'])
@@ -1626,8 +2096,55 @@ function objectToRows(values: Record<string, string>): KeyValueRow[] {
   return rows.length > 0 ? rows : [emptyRow()]
 }
 
+function mapToRows(values: Record<string, string> | undefined): KeyValueRow[] {
+  return objectToRows(values || {})
+}
+
 function rowsToObject(rows: KeyValueRow[]): Record<string, string> {
   return Object.fromEntries(rows.filter((row) => row.enabled && row.key.trim()).map((row) => [row.key.trim(), row.value]))
+}
+
+function applyVariablesToRows(rows: KeyValueRow[], variables: Record<string, string>): KeyValueRow[] {
+  return rows.map((row) => ({
+    ...row,
+    key: expandVariables(row.key, variables),
+    value: expandVariables(row.value, variables)
+  }))
+}
+
+function expandVariables(value: string, variables: Record<string, string>): string {
+  return value.replace(/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g, (match, name: string) => (
+    Object.prototype.hasOwnProperty.call(variables, name) ? variables[name] : match
+  ))
+}
+
+function buildCollectionHeaders(settings: CollectionSettings, requestHeaders: Record<string, string>): Record<string, string> {
+  const variables = settings.variables || {}
+  const headers = {
+    ...expandRecord(settings.headers || {}, variables),
+    ...requestHeaders
+  }
+  const commonCookie = cookieRecordToHeader(expandRecord(settings.cookies || {}, variables))
+  if (commonCookie) {
+    const cookieKey = Object.keys(headers).find((key) => key.toLowerCase() === 'cookie') || 'Cookie'
+    headers[cookieKey] = headers[cookieKey] ? `${commonCookie}; ${headers[cookieKey]}` : commonCookie
+  }
+  if (settings.userAgent.enabled && settings.userAgent.value.trim()) {
+    const userAgentKey = Object.keys(headers).find((key) => key.toLowerCase() === 'user-agent') || 'User-Agent'
+    headers[userAgentKey] = expandVariables(settings.userAgent.value.trim(), variables)
+  }
+  return headers
+}
+
+function expandRecord(values: Record<string, string>, variables: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [expandVariables(key, variables), expandVariables(value, variables)]))
+}
+
+function cookieRecordToHeader(cookies: Record<string, string>): string {
+  return Object.entries(cookies)
+    .filter(([key]) => key.trim())
+    .map(([key, value]) => `${key.trim()}=${value}`)
+    .join('; ')
 }
 
 function bodyToRows(body: string): { rows: KeyValueRow[]; mode: 'json' | 'raw' } {

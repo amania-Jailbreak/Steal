@@ -1,5 +1,5 @@
 import { clipboard, contextBridge, ipcRenderer } from 'electron'
-import type { AppApi, AppSettings, AppTheme, CapturedExchange, ProxyStatus, ReplayRequest } from '../shared/types'
+import type { AppApi, AppSettings, AppTheme, CapturedExchange, CollectionSettings, ProxyStatus, ReplayRequest } from '../shared/types'
 
 const api: AppApi = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -7,6 +7,7 @@ const api: AppApi = {
   getProxyStatus: () => ipcRenderer.invoke('proxy:status'),
   startProxy: () => ipcRenderer.invoke('proxy:start'),
   stopProxy: () => ipcRenderer.invoke('proxy:stop'),
+  setCapturePaused: (paused: boolean) => ipcRenderer.invoke('captures:pause', paused),
   enableSystemProxy: () => ipcRenderer.invoke('system-proxy:enable'),
   disableSystemProxy: () => ipcRenderer.invoke('system-proxy:disable'),
   clearCaptures: () => ipcRenderer.invoke('captures:clear'),
@@ -14,6 +15,8 @@ const api: AppApi = {
   saveApi: (exchangeId: string, name: string, tags: string[], collectionName: string) =>
     ipcRenderer.invoke('saved:save', { exchangeId, name, tags, collectionName }),
   listCollections: () => ipcRenderer.invoke('collections:list'),
+  updateCollectionSettings: (collectionId: string, settings: CollectionSettings) =>
+    ipcRenderer.invoke('collections:update-settings', { collectionId, settings }),
   listSavedApis: () => ipcRenderer.invoke('saved:list'),
   exportSavedApis: () => ipcRenderer.invoke('saved:export'),
   importSavedApis: () => ipcRenderer.invoke('saved:import'),
@@ -28,9 +31,6 @@ const api: AppApi = {
   updateTheme: (theme: AppTheme) => ipcRenderer.invoke('theme:update', theme),
   resetTheme: () => ipcRenderer.invoke('theme:reset'),
   openThemeFile: () => ipcRenderer.invoke('theme:open-file'),
-  chooseThemeImage: () => ipcRenderer.invoke('theme:choose-image'),
-  getThemeImageDataUrl: (imagePath: string) => ipcRenderer.invoke('theme:image-data-url', imagePath),
-  applyThemeBackground: (background: AppTheme['background']) => ipcRenderer.invoke('theme:background', background),
   getThemeHotReload: () => ipcRenderer.invoke('theme:hot-reload:get'),
   setThemeHotReload: (enabled: boolean) => ipcRenderer.invoke('theme:hot-reload:set', enabled),
   getAppPlatform: () => ipcRenderer.invoke('app:platform'),

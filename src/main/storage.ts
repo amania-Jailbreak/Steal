@@ -1,6 +1,17 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { CapturedExchange, SavedApi, SavedCollection } from '../shared/types'
+import type { CapturedExchange, CollectionSettings, SavedApi, SavedCollection } from '../shared/types'
+
+export const defaultCollectionSettings: CollectionSettings = {
+  variables: {},
+  headers: {},
+  cookies: {},
+  userAgent: {
+    enabled: false,
+    preset: 'none',
+    value: ''
+  }
+}
 
 export class SavedApiStore {
   private readonly collectionsIndexPath: string
@@ -37,6 +48,17 @@ export class SavedApiStore {
     return collections
       .map((collection) => ({ ...collection, itemCount: counts.get(collection.id) || 0 }))
       .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  async updateCollectionSettings(collectionId: string, settings: CollectionSettings): Promise<SavedCollection[]> {
+    const collections = await this.readCollections()
+    const nextCollections = collections.map((collection) => (
+      collection.id === collectionId
+        ? { ...collection, settings: normalizeCollectionSettings(settings), updatedAt: new Date().toISOString() }
+        : collection
+    ))
+    await this.writeCollections(nextCollections)
+    return this.listCollections()
   }
 
   async save(exchange: CapturedExchange, name: string, tags: string[], collectionName: string): Promise<SavedApi> {
@@ -93,7 +115,8 @@ export class SavedApiStore {
       name: normalizedName,
       createdAt: now,
       updatedAt: now,
-      itemCount: 0
+      itemCount: 0,
+      settings: defaultCollectionSettings
     }
     await this.writeCollections([...collections, created])
     return created
@@ -103,7 +126,8 @@ export class SavedApiStore {
     await this.ensureReady()
     try {
       const raw = await readFile(this.collectionsIndexPath, 'utf8')
-      return JSON.parse(raw) as SavedCollection[]
+      const parsed = JSON.parse(raw) as Array<Partial<SavedCollection>>
+      return parsed.map(normalizeCollection)
     } catch {
       return []
     }
@@ -112,4 +136,38 @@ export class SavedApiStore {
   private async writeCollections(collections: SavedCollection[]): Promise<void> {
     await writeFile(this.collectionsIndexPath, JSON.stringify(collections, null, 2))
   }
+}
+
+function normalizeCollection(collection: Partial<SavedCollection>): SavedCollection {
+  const now = new Date().toISOString()
+  return {
+    id: collection.id || crypto.randomUUID(),
+    name: collection.name || 'Default',
+    createdAt: collection.createdAt || now,
+    updatedAt: collection.updatedAt || collection.createdAt || now,
+    itemCount: collection.itemCount || 0,
+    settings: normalizeCollectionSettings(collection.settings)
+  }
+}
+
+function normalizeCollectionSettings(settings: Partial<CollectionSettings> | undefined): CollectionSettings {
+  return {
+    variables: normalizeStringMap(settings?.variables),
+    headers: normalizeStringMap(settings?.headers),
+    cookies: normalizeStringMap(settings?.cookies),
+    userAgent: {
+      enabled: Boolean(settings?.userAgent?.enabled),
+      preset: settings?.userAgent?.preset || defaultCollectionSettings.userAgent.preset,
+      value: settings?.userAgent?.value || ''
+    }
+  }
+}
+
+function normalizeStringMap(value: Record<string, string> | undefined): Record<string, string> {
+  if (!value || typeof value !== 'object') return {}
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key, item]) => key.trim() && typeof item === 'string')
+      .map(([key, item]) => [key.trim(), item])
+  )
 }

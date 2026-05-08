@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, session, Tray } from 'electron'
 import { execFile } from 'node:child_process'
-import { extname, join } from 'node:path'
+import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
 import { existsSync, mkdirSync, watch, type FSWatcher } from 'node:fs'
 import { ProxyService } from './proxy-service'
@@ -8,8 +8,8 @@ import { SettingsStore } from './settings-store'
 import { SavedApiStore } from './storage'
 import { ThemeStore } from './theme-store'
 import { disableStealSystemProxy, enableSystemProxy, installTrustedCertificate, isCertificateTrusted, restoreSystemProxy } from './system-proxy'
-import { decodeBodyText } from './body-decode'
-import type { AppTheme, CertificateStatus, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, ThemeBackgroundMode } from '../shared/types'
+import { decodeBody } from './body-decode'
+import type { AppTheme, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi } from '../shared/types'
 
 let mainWindow: BrowserWindow | undefined
 let proxyService: ProxyService
@@ -34,8 +34,7 @@ function createWindow(): void {
     minWidth: 1120,
     minHeight: 720,
     title: 'Steal',
-    backgroundColor: '#00000000',
-    transparent: true,
+    backgroundColor: '#f7f8fb',
     frame: process.platform === 'darwin' ? undefined : false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
     trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 13 } : undefined,
@@ -64,8 +63,6 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = undefined
   })
-
-  void themeStore?.get().then((theme) => applyNativeBackgroundMode(theme.background.mode))
 }
 
 app.whenReady().then(async () => {
@@ -150,22 +147,6 @@ function registerIpc(): void {
     await themeStore.get()
     await shell.openPath(themeStore.path)
   })
-  ipcMain.handle('theme:choose-image', async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-      title: 'Choose background image',
-      properties: ['openFile'],
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
-    })
-    return canceled ? undefined : filePaths[0]
-  })
-  ipcMain.handle('theme:image-data-url', async (_event, imagePath: string) => {
-    if (!imagePath || !existsSync(imagePath)) return undefined
-    const data = await readFile(imagePath)
-    return `data:${mimeTypeForImage(imagePath)};base64,${data.toString('base64')}`
-  })
-  ipcMain.handle('theme:background', (_event, background: AppTheme['background']) => {
-    applyNativeBackground(background)
-  })
   ipcMain.handle('theme:hot-reload:get', () => themeHotReloadEnabled)
   ipcMain.handle('theme:hot-reload:set', async (_event, enabled: boolean) => {
     await setThemeHotReload(enabled)
@@ -183,11 +164,15 @@ function registerIpc(): void {
     return disableStealSystemProxy(status.host, status.port)
   })
   ipcMain.handle('captures:list', () => proxyService.getCaptures())
+  ipcMain.handle('captures:pause', (_event, paused: boolean) => proxyService.setCapturePaused(paused))
   ipcMain.handle('captures:clear', () => {
     proxyService.clearCaptures()
   })
   ipcMain.handle('saved:list', () => savedApiStore.list())
   ipcMain.handle('collections:list', () => savedApiStore.listCollections())
+  ipcMain.handle('collections:update-settings', (_event, payload: { collectionId: string; settings: CollectionSettings }) => {
+    return savedApiStore.updateCollectionSettings(payload.collectionId, payload.settings)
+  })
   ipcMain.handle('saved:save', async (_event, payload: { exchangeId: string; name: string; tags: string[]; collectionName: string }) => {
     const exchange = proxyService.findCapture(payload.exchangeId)
     if (!exchange) throw new Error('Capture not found.')
@@ -243,36 +228,6 @@ function registerIpc(): void {
     BrowserWindow.fromWebContents(event.sender)?.close()
   })
   ipcMain.handle('browser:launch-chrome', (_event, url: string) => launchChromeBrowser(url))
-}
-
-function applyNativeBackgroundMode(mode: ThemeBackgroundMode): void {
-  applyNativeBackground({ mode, opacity: 1, imagePath: '', imageOpacity: 0.45, imageBrightness: 0.85 })
-}
-
-function applyNativeBackground(background: AppTheme['background']): void {
-  if (!mainWindow) return
-  if (process.platform === 'win32') {
-    mainWindow.setBackgroundMaterial('none')
-  } else if (process.platform === 'darwin') {
-    mainWindow.setVibrancy(null)
-  }
-}
-
-function mimeTypeForImage(filePath: string): string {
-  switch (extname(filePath).toLowerCase()) {
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg'
-    case '.webp':
-      return 'image/webp'
-    case '.gif':
-      return 'image/gif'
-    case '.bmp':
-      return 'image/bmp'
-    case '.png':
-    default:
-      return 'image/png'
-  }
 }
 
 async function setThemeHotReload(enabled: boolean): Promise<void> {
@@ -468,12 +423,13 @@ async function replay(request: ReplayRequest): Promise<ReplayResult> {
   })
   const responseBuffer = Buffer.from(await response.arrayBuffer())
   const responseHeaders = Object.fromEntries(response.headers.entries())
-  const body = decodeBodyText(responseBuffer, responseHeaders)
+  const body = decodeBody(responseBuffer, responseHeaders)
   return {
     status: response.status,
     statusText: response.statusText,
     headers: responseHeaders,
-    body,
+    body: body.text,
+    bodyBase64: body.base64,
     durationMs: Math.round(performance.now() - startedAt),
     size: responseBuffer.byteLength
   }

@@ -1,9 +1,10 @@
 import { app, BrowserWindow, session, ipcMain, shell, dialog, Tray, Menu, nativeImage } from "electron";
 import { execFile } from "node:child_process";
-import { join, dirname, extname } from "node:path";
+import { join, dirname } from "node:path";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { mkdirSync, existsSync, watch } from "node:fs";
 import { EventEmitter } from "node:events";
+import { isIP } from "node:net";
 import { Proxy } from "http-mitm-proxy";
 import { brotliDecompressSync, gunzipSync, inflateSync, inflateRawSync } from "node:zlib";
 import { promisify } from "node:util";
@@ -11,13 +12,18 @@ import __cjs_mod__ from "node:module";
 const __filename = import.meta.filename;
 const __dirname = import.meta.dirname;
 const require2 = __cjs_mod__.createRequire(import.meta.url);
-function decodeBodyText(buffer, headers) {
-  if (buffer.byteLength === 0) return "";
+function decodeBody(buffer, headers) {
+  if (buffer.byteLength === 0) return { text: "" };
   const contentType = headerToString$1(headers["content-type"]).toLowerCase();
   const contentEncoding = headerToString$1(headers["content-encoding"]).toLowerCase();
-  if (!isTextLikeContent(contentType)) return `[binary body: ${buffer.byteLength} bytes]`;
   const decoded = decodeContentEncoding(buffer, contentEncoding);
-  return decodeText(decoded, contentType);
+  if (contentType && !isTextLikeContent(contentType) || !contentType && looksBinary(decoded)) {
+    return {
+      text: `[binary body: ${decoded.byteLength} bytes]`,
+      base64: decoded.toString("base64")
+    };
+  }
+  return { text: decodeText(decoded, contentType) };
 }
 function isTextLikeContent(contentType) {
   return contentType.includes("application/json") || contentType.includes("text/") || contentType.includes("application/xml") || contentType.includes("application/javascript") || contentType.includes("application/x-www-form-urlencoded") || contentType.includes("graphql");
@@ -61,6 +67,17 @@ function decodeText(buffer, contentType) {
     }
   }
   return buffer.toString("utf8");
+}
+function looksBinary(buffer) {
+  if (buffer.byteLength === 0) return false;
+  const sampleLength = Math.min(buffer.byteLength, 4096);
+  let controlBytes = 0;
+  for (let index = 0; index < sampleLength; index += 1) {
+    const byte = buffer[index];
+    if (byte === 0) return true;
+    if (byte < 7 || byte > 13 && byte < 32) controlBytes += 1;
+  }
+  return controlBytes / sampleLength > 0.08;
 }
 function extractCharset(contentType) {
   const match = /charset\s*=\s*"?([^";\s]+)"?/i.exec(contentType);
@@ -131,6 +148,7 @@ class ProxyService extends EventEmitter {
     mkdirSync(sslCaDir, { recursive: true });
     this.status = {
       running: false,
+      capturePaused: false,
       host,
       port,
       caCertPath: join(sslCaDir, "certs", "ca.pem"),
@@ -143,6 +161,7 @@ class ProxyService extends EventEmitter {
   proxy;
   captures = [];
   status;
+  capturePaused = false;
   getStatus() {
     return { ...this.status };
   }
@@ -155,12 +174,19 @@ class ProxyService extends EventEmitter {
   clearCaptures() {
     this.captures = [];
   }
+  setCapturePaused(paused) {
+    this.capturePaused = paused;
+    this.status = { ...this.status, capturePaused: paused };
+    this.emit("status", this.getStatus());
+    return this.getStatus();
+  }
   async start() {
     if (this.proxy) return this.getStatus();
     const proxy = new Proxy();
     this.proxy = proxy;
     installProxyConsoleFilter();
     suppressNoisyProxyLogs(proxy);
+    guardCertificateHosts(proxy);
     this.status = { ...this.status, running: false, error: void 0 };
     this.emit("status", this.getStatus());
     proxy.onError((_ctx, error, kind) => {
@@ -231,16 +257,22 @@ class ProxyService extends EventEmitter {
           const sourceApp = await ctx.stealSourceAppLookup;
           const requestBody = Buffer.concat(requestChunks);
           const responseBody = Buffer.concat(responseChunks);
+          const decodedRequestBody = decodeBody(requestBody, capture.requestHeaders);
+          const decodedResponseBody = decodeBody(responseBody, capture.responseHeaders);
           if (sourceApp.isStealChrome) capture.source = "browser";
           capture.sourceAppName = sourceApp.name || capture.sourceAppName;
           capture.sourceProcessId = sourceApp.pid;
           capture.durationMs = Date.now() - startedAtMs;
           capture.requestSize = requestBody.byteLength;
           capture.responseSize = responseBody.byteLength;
-          capture.requestBody = decodeBodyText(requestBody, capture.requestHeaders);
-          capture.responseBody = decodeBodyText(responseBody, capture.responseHeaders);
-          this.captures.push(capture);
-          this.emit("capture", capture);
+          capture.requestBody = decodedRequestBody.text;
+          capture.requestBodyBase64 = decodedRequestBody.base64;
+          capture.responseBody = decodedResponseBody.text;
+          capture.responseBodyBase64 = decodedResponseBody.base64;
+          if (!this.capturePaused) {
+            this.captures.push(capture);
+            this.emit("capture", capture);
+          }
           done();
         })().catch((error) => done(error));
       });
@@ -284,6 +316,27 @@ function suppressNoisyProxyLogs(proxy) {
     if (isBenignProxyError(kind, error)) return;
     originalOnError(kind, ctx, error);
   };
+}
+function guardCertificateHosts(proxy) {
+  const originalOnCertificateMissing = proxy.onCertificateMissing.bind(proxy);
+  proxy.onCertificateMissing = (ctx, files, callback) => {
+    const hosts = (files.hosts || [ctx.hostname]).map(String).filter(isValidCertificateHost);
+    if (hosts.length === 0) {
+      callback(new Error(`Invalid CONNECT host for certificate: ${String(ctx.hostname || "")}`));
+      return;
+    }
+    try {
+      originalOnCertificateMissing(ctx, { ...files, hosts }, callback);
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+}
+function isValidCertificateHost(host) {
+  const normalized = host.trim().replace(/^\[|\]$/g, "");
+  if (!normalized || normalized.includes("/") || normalized.includes(":")) return false;
+  if (/^[\d.]+$/.test(normalized)) return isIP(normalized) !== 0;
+  return /^(?:\*\.)?(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$/.test(normalized);
 }
 function isBenignProxyError(kind, error) {
   const code = error.code;
@@ -346,6 +399,16 @@ function normalizeSettings(value) {
     browserMode: value.browserMode === "chrome" ? "chrome" : "embedded"
   };
 }
+const defaultCollectionSettings = {
+  variables: {},
+  headers: {},
+  cookies: {},
+  userAgent: {
+    enabled: false,
+    preset: "none",
+    value: ""
+  }
+};
 class SavedApiStore {
   constructor(collectionsDir) {
     this.collectionsDir = collectionsDir;
@@ -375,6 +438,12 @@ class SavedApiStore {
       if (api.collectionId) counts.set(api.collectionId, (counts.get(api.collectionId) || 0) + 1);
     }
     return collections.map((collection) => ({ ...collection, itemCount: counts.get(collection.id) || 0 })).sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async updateCollectionSettings(collectionId, settings) {
+    const collections = await this.readCollections();
+    const nextCollections = collections.map((collection) => collection.id === collectionId ? { ...collection, settings: normalizeCollectionSettings(settings), updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : collection);
+    await this.writeCollections(nextCollections);
+    return this.listCollections();
   }
   async save(exchange, name, tags, collectionName) {
     await this.ensureReady();
@@ -427,7 +496,8 @@ class SavedApiStore {
       name: normalizedName,
       createdAt: now,
       updatedAt: now,
-      itemCount: 0
+      itemCount: 0,
+      settings: defaultCollectionSettings
     };
     await this.writeCollections([...collections, created]);
     return created;
@@ -436,7 +506,8 @@ class SavedApiStore {
     await this.ensureReady();
     try {
       const raw = await readFile(this.collectionsIndexPath, "utf8");
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return parsed.map(normalizeCollection);
     } catch {
       return [];
     }
@@ -444,6 +515,35 @@ class SavedApiStore {
   async writeCollections(collections) {
     await writeFile(this.collectionsIndexPath, JSON.stringify(collections, null, 2));
   }
+}
+function normalizeCollection(collection) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  return {
+    id: collection.id || crypto.randomUUID(),
+    name: collection.name || "Default",
+    createdAt: collection.createdAt || now,
+    updatedAt: collection.updatedAt || collection.createdAt || now,
+    itemCount: collection.itemCount || 0,
+    settings: normalizeCollectionSettings(collection.settings)
+  };
+}
+function normalizeCollectionSettings(settings) {
+  return {
+    variables: normalizeStringMap(settings?.variables),
+    headers: normalizeStringMap(settings?.headers),
+    cookies: normalizeStringMap(settings?.cookies),
+    userAgent: {
+      enabled: Boolean(settings?.userAgent?.enabled),
+      preset: settings?.userAgent?.preset || defaultCollectionSettings.userAgent.preset,
+      value: settings?.userAgent?.value || ""
+    }
+  };
+}
+function normalizeStringMap(value) {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(([key, item]) => key.trim() && typeof item === "string").map(([key, item]) => [key.trim(), item])
+  );
 }
 const defaultTheme = {
   name: "Steal Light",
@@ -480,13 +580,6 @@ const defaultTheme = {
     delete: { text: "#991b1b", background: "#fff1f2" },
     head: { text: "#2457c5", background: "#eef4ff" },
     options: { text: "#2457c5", background: "#eef4ff" }
-  },
-  background: {
-    mode: "solid",
-    opacity: 1,
-    imagePath: "",
-    imageOpacity: 0.45,
-    imageBrightness: 0.85
   }
 };
 const themePresets = [
@@ -715,12 +808,11 @@ class ThemeStore {
   }
 }
 function makeTheme(name, colors, methods = {}) {
-  return { name, colors, methods: { ...defaultTheme.methods, ...methods }, background: defaultTheme.background };
+  return { name, colors, methods: { ...defaultTheme.methods, ...methods } };
 }
 function normalizeTheme(value) {
   const colors = value.colors || {};
   const methods = value.methods || {};
-  const background = value.background || {};
   return {
     name: typeof value.name === "string" && value.name.trim() ? value.name.trim() : defaultTheme.name,
     colors: Object.fromEntries(
@@ -737,21 +829,11 @@ function normalizeTheme(value) {
           background: normalizeColor(candidate?.background, fallback.background)
         }];
       })
-    ),
-    background: {
-      mode: ["solid", "transparent", "image"].includes(background.mode || "") ? background.mode : defaultTheme.background.mode,
-      opacity: normalizeNumber(background.opacity, defaultTheme.background.opacity, 0, 1),
-      imagePath: typeof background.imagePath === "string" ? background.imagePath : defaultTheme.background.imagePath,
-      imageOpacity: normalizeNumber(background.imageOpacity, defaultTheme.background.imageOpacity, 0, 1),
-      imageBrightness: normalizeNumber(background.imageBrightness, defaultTheme.background.imageBrightness, 0.2, 1.6)
-    }
+    )
   };
 }
 function normalizeColor(value, fallback) {
   return typeof value === "string" && colorPattern.test(value.trim()) ? value.trim() : fallback;
-}
-function normalizeNumber(value, fallback, min, max) {
-  return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 }
 const execFileAsync = promisify(execFile);
 const defaultExecOptions = { encoding: "utf8", timeout: 8e3 };
@@ -1058,8 +1140,7 @@ function createWindow() {
     minWidth: 1120,
     minHeight: 720,
     title: "Steal",
-    backgroundColor: "#00000000",
-    transparent: true,
+    backgroundColor: "#f7f8fb",
     frame: process.platform === "darwin" ? void 0 : false,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : void 0,
     trafficLightPosition: process.platform === "darwin" ? { x: 16, y: 13 } : void 0,
@@ -1084,7 +1165,6 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = void 0;
   });
-  void themeStore?.get().then((theme) => applyNativeBackgroundMode(theme.background.mode));
 }
 app.whenReady().then(async () => {
   const dataDir = join(app.getPath("userData"), "steal-data");
@@ -1160,22 +1240,6 @@ function registerIpc() {
     await themeStore.get();
     await shell.openPath(themeStore.path);
   });
-  ipcMain.handle("theme:choose-image", async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-      title: "Choose background image",
-      properties: ["openFile"],
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }]
-    });
-    return canceled ? void 0 : filePaths[0];
-  });
-  ipcMain.handle("theme:image-data-url", async (_event, imagePath) => {
-    if (!imagePath || !existsSync(imagePath)) return void 0;
-    const data = await readFile(imagePath);
-    return `data:${mimeTypeForImage(imagePath)};base64,${data.toString("base64")}`;
-  });
-  ipcMain.handle("theme:background", (_event, background) => {
-    applyNativeBackground();
-  });
   ipcMain.handle("theme:hot-reload:get", () => themeHotReloadEnabled);
   ipcMain.handle("theme:hot-reload:set", async (_event, enabled) => {
     await setThemeHotReload(enabled);
@@ -1193,11 +1257,15 @@ function registerIpc() {
     return disableStealSystemProxy(status.host, status.port);
   });
   ipcMain.handle("captures:list", () => proxyService.getCaptures());
+  ipcMain.handle("captures:pause", (_event, paused) => proxyService.setCapturePaused(paused));
   ipcMain.handle("captures:clear", () => {
     proxyService.clearCaptures();
   });
   ipcMain.handle("saved:list", () => savedApiStore.list());
   ipcMain.handle("collections:list", () => savedApiStore.listCollections());
+  ipcMain.handle("collections:update-settings", (_event, payload) => {
+    return savedApiStore.updateCollectionSettings(payload.collectionId, payload.settings);
+  });
   ipcMain.handle("saved:save", async (_event, payload) => {
     const exchange = proxyService.findCapture(payload.exchangeId);
     if (!exchange) throw new Error("Capture not found.");
@@ -1253,33 +1321,6 @@ function registerIpc() {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
   ipcMain.handle("browser:launch-chrome", (_event, url) => launchChromeBrowser(url));
-}
-function applyNativeBackgroundMode(mode) {
-  applyNativeBackground();
-}
-function applyNativeBackground(background) {
-  if (!mainWindow) return;
-  if (process.platform === "win32") {
-    mainWindow.setBackgroundMaterial("none");
-  } else if (process.platform === "darwin") {
-    mainWindow.setVibrancy(null);
-  }
-}
-function mimeTypeForImage(filePath) {
-  switch (extname(filePath).toLowerCase()) {
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".webp":
-      return "image/webp";
-    case ".gif":
-      return "image/gif";
-    case ".bmp":
-      return "image/bmp";
-    case ".png":
-    default:
-      return "image/png";
-  }
 }
 async function setThemeHotReload(enabled) {
   themeHotReloadEnabled = enabled;
@@ -1457,12 +1498,13 @@ async function replay(request) {
   });
   const responseBuffer = Buffer.from(await response.arrayBuffer());
   const responseHeaders = Object.fromEntries(response.headers.entries());
-  const body = decodeBodyText(responseBuffer, responseHeaders);
+  const body = decodeBody(responseBuffer, responseHeaders);
   return {
     status: response.status,
     statusText: response.statusText,
     headers: responseHeaders,
-    body,
+    body: body.text,
+    bodyBase64: body.base64,
     durationMs: Math.round(performance.now() - startedAt),
     size: responseBuffer.byteLength
   };
