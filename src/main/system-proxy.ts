@@ -23,6 +23,8 @@ interface WindowsProxySnapshot {
   proxyEnable?: string
   proxyServer?: string
   proxyOverride?: string
+  autoDetect?: string
+  autoConfigURL?: string
 }
 
 const windowsInternetSettingsKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'
@@ -87,6 +89,8 @@ async function enableWindowsSystemProxy(host: string, port: number): Promise<voi
   await regAdd('ProxyEnable', 'REG_DWORD', '1')
   await regAdd('ProxyServer', 'REG_SZ', proxyServer)
   await regAdd('ProxyOverride', 'REG_SZ', '<local>')
+  await regAdd('AutoDetect', 'REG_DWORD', '0')
+  await regDelete('AutoConfigURL')
   await notifyWindowsInternetSettingsChanged()
 }
 
@@ -98,6 +102,8 @@ async function restoreWindowsSystemProxy(): Promise<void> {
   await restoreWindowsValue('ProxyEnable', 'REG_DWORD', previous.proxyEnable)
   await restoreWindowsValue('ProxyServer', 'REG_SZ', previous.proxyServer)
   await restoreWindowsValue('ProxyOverride', 'REG_SZ', previous.proxyOverride)
+  await restoreWindowsValue('AutoDetect', 'REG_DWORD', previous.autoDetect)
+  await restoreWindowsValue('AutoConfigURL', 'REG_SZ', previous.autoConfigURL)
   await notifyWindowsInternetSettingsChanged()
 }
 
@@ -205,12 +211,14 @@ async function runNetworksetup(args: string[]): Promise<void> {
 }
 
 async function getWindowsProxySnapshot(): Promise<WindowsProxySnapshot> {
-  const [proxyEnable, proxyServer, proxyOverride] = await Promise.all([
+  const [proxyEnable, proxyServer, proxyOverride, autoDetect, autoConfigURL] = await Promise.all([
     regQuery('ProxyEnable'),
     regQuery('ProxyServer'),
-    regQuery('ProxyOverride')
+    regQuery('ProxyOverride'),
+    regQuery('AutoDetect'),
+    regQuery('AutoConfigURL')
   ])
-  return { proxyEnable, proxyServer, proxyOverride }
+  return { proxyEnable, proxyServer, proxyOverride, autoDetect, autoConfigURL }
 }
 
 async function restoreWindowsValue(name: string, type: 'REG_DWORD' | 'REG_SZ', value: string | undefined): Promise<void> {
