@@ -447,8 +447,14 @@ class SavedApiStore {
 }
 const execFileAsync = promisify(execFile);
 const defaultExecOptions = { encoding: "utf8", timeout: 8e3 };
+const windowsInternetSettingsKey = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 let snapshot;
+let windowsSnapshot;
 async function enableSystemProxy(host, port) {
+  if (process.platform === "win32") {
+    await enableWindowsSystemProxy(host, port);
+    return;
+  }
   if (process.platform !== "darwin") return;
   const services = await listNetworkServices();
   if (!snapshot) {
@@ -466,6 +472,10 @@ async function enableSystemProxy(host, port) {
   }
 }
 async function restoreSystemProxy() {
+  if (process.platform === "win32") {
+    await restoreWindowsSystemProxy();
+    return;
+  }
   if (process.platform !== "darwin" || !snapshot) return;
   const previous = snapshot;
   snapshot = void 0;
@@ -475,6 +485,10 @@ async function restoreSystemProxy() {
   }
 }
 async function disableStealSystemProxy(host, port) {
+  if (process.platform === "win32") {
+    await disableWindowsSystemProxyIfMatches(host, port);
+    return;
+  }
   if (process.platform !== "darwin") return;
   const services = await listNetworkServices();
   for (const service of services) {
@@ -482,6 +496,31 @@ async function disableStealSystemProxy(host, port) {
     await disableServiceProxyIfMatches(service, "secureWeb", host, port);
   }
   snapshot = void 0;
+}
+async function enableWindowsSystemProxy(host, port) {
+  if (!windowsSnapshot) windowsSnapshot = await getWindowsProxySnapshot();
+  const proxyServer = `http=${host}:${port};https=${host}:${port}`;
+  await regAdd("ProxyEnable", "REG_DWORD", "1");
+  await regAdd("ProxyServer", "REG_SZ", proxyServer);
+  await regAdd("ProxyOverride", "REG_SZ", "<local>");
+  await notifyWindowsInternetSettingsChanged();
+}
+async function restoreWindowsSystemProxy() {
+  if (!windowsSnapshot) return;
+  const previous = windowsSnapshot;
+  windowsSnapshot = void 0;
+  await restoreWindowsValue("ProxyEnable", "REG_DWORD", previous.proxyEnable);
+  await restoreWindowsValue("ProxyServer", "REG_SZ", previous.proxyServer);
+  await restoreWindowsValue("ProxyOverride", "REG_SZ", previous.proxyOverride);
+  await notifyWindowsInternetSettingsChanged();
+}
+async function disableWindowsSystemProxyIfMatches(host, port) {
+  const current = await getWindowsProxySnapshot();
+  if (current.proxyServer?.includes(`${host}:${port}`)) {
+    await regAdd("ProxyEnable", "REG_DWORD", "0");
+    await notifyWindowsInternetSettingsChanged();
+  }
+  windowsSnapshot = void 0;
 }
 async function isCertificateTrusted(certificatePath) {
   if (process.platform !== "darwin") return true;
@@ -558,6 +597,59 @@ async function runNetworksetup(args) {
       `do shell script ${appleScriptQuote(["networksetup", ...args].map(shellQuote).join(" "))} with administrator privileges`
     ], 15e3);
   }
+}
+async function getWindowsProxySnapshot() {
+  const [proxyEnable, proxyServer, proxyOverride] = await Promise.all([
+    regQuery("ProxyEnable"),
+    regQuery("ProxyServer"),
+    regQuery("ProxyOverride")
+  ]);
+  return { proxyEnable, proxyServer, proxyOverride };
+}
+async function restoreWindowsValue(name, type, value) {
+  if (value === void 0) {
+    await regDelete(name);
+    return;
+  }
+  await regAdd(name, type, value);
+}
+async function regQuery(name) {
+  try {
+    const { stdout } = await runExecFile("reg", ["query", windowsInternetSettingsKey, "/v", name]);
+    const line = stdout.split("\n").find((item) => item.includes(name));
+    if (!line) return void 0;
+    const match = line.trim().match(new RegExp(`^${name}\\s+REG_\\w+\\s+(.+)$`));
+    if (!match) return void 0;
+    return match[1].trim();
+  } catch {
+    return void 0;
+  }
+}
+async function regAdd(name, type, value) {
+  await runExecFile("reg", ["add", windowsInternetSettingsKey, "/v", name, "/t", type, "/d", value, "/f"]);
+}
+async function regDelete(name) {
+  try {
+    await runExecFile("reg", ["delete", windowsInternetSettingsKey, "/v", name, "/f"]);
+  } catch {
+  }
+}
+async function notifyWindowsInternetSettingsChanged() {
+  await runExecFile("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    `
+      $signature = @"
+      [DllImport("wininet.dll", SetLastError = true)]
+      public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+"@
+      $type = Add-Type -MemberDefinition $signature -Name WinInetSettings -Namespace Steal -PassThru
+      $type::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+      $type::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+    `
+  ], 8e3).catch(() => void 0);
 }
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
