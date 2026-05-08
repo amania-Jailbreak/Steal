@@ -5,8 +5,8 @@ import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import xml from 'highlight.js/lib/languages/xml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
-import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Folder, FolderOpen, Funnel, Library, Monitor, Pause, Play, Plus, RefreshCcw, Save, Search, Send, Settings, Trash2, X } from 'lucide-react'
-import type { AppSettings, BrowserMode, CapturedExchange, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection } from '../../shared/types'
+import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Folder, FolderOpen, Funnel, Library, Monitor, Pause, Play, Plus, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
+import type { AppSettings, BrowserMode, CapturedExchange, CertificateStatus, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection } from '../../shared/types'
 import './styles.css'
 
 type AppMode = 'capture' | 'collection' | 'settings'
@@ -31,6 +31,12 @@ const emptyStatus: ProxyStatus = {
   port: 8899,
   caCertPath: '',
   sslCaDir: ''
+}
+
+const emptyCertificateStatus: CertificateStatus = {
+  caCertPath: '',
+  exists: false,
+  trusted: false
 }
 
 const MIN_DETAILS_WIDTH = 300
@@ -68,6 +74,7 @@ export default function App(): JSX.Element {
   const [detailsWidth, setDetailsWidth] = useState(420)
   const [networkHeight, setNetworkHeight] = useState(270)
   const [status, setStatus] = useState<ProxyStatus>(emptyStatus)
+  const [certificateStatus, setCertificateStatus] = useState<CertificateStatus>(emptyCertificateStatus)
   const [captures, setCaptures] = useState<CapturedExchange[]>([])
   const [collections, setCollections] = useState<SavedCollection[]>([])
   const [savedApis, setSavedApis] = useState<SavedApi[]>([])
@@ -102,6 +109,8 @@ export default function App(): JSX.Element {
   const [testError, setTestError] = useState('')
   const [isSendingTest, setIsSendingTest] = useState(false)
   const [proxyTransition, setProxyTransition] = useState<'starting' | 'stopping'>()
+  const [certificateInstalling, setCertificateInstalling] = useState(false)
+  const [certificateChecking, setCertificateChecking] = useState(false)
   const [message, setMessage] = useState('')
 
   useEffect(() => {
@@ -110,7 +119,10 @@ export default function App(): JSX.Element {
       setCaptures((current) => [capture, ...current])
       setSelectedId((current) => current || capture.id)
     })
-    const removeStatus = window.steal.onProxyStatus(setStatus)
+    const removeStatus = window.steal.onProxyStatus((nextStatus) => {
+      setStatus(nextStatus)
+      void refreshCertificateStatus()
+    })
     return () => {
       removeCapture()
       removeStatus()
@@ -213,17 +225,30 @@ export default function App(): JSX.Element {
   }, [selectedSavedApi])
 
   async function refreshAll(): Promise<void> {
-    const [nextStatus, nextCaptures, nextCollections, nextSavedApis] = await Promise.all([
+    const [nextStatus, nextCaptures, nextCollections, nextSavedApis, nextCertificateStatus] = await Promise.all([
       window.steal.getProxyStatus(),
       window.steal.getCaptures(),
       window.steal.listCollections(),
-      window.steal.listSavedApis()
+      window.steal.listSavedApis(),
+      window.steal.getCertificateStatus()
     ])
     setStatus(nextStatus)
     setCaptures(nextCaptures)
     setCollections(nextCollections)
     setSavedApis(nextSavedApis)
+    setCertificateStatus(nextCertificateStatus)
     setSelectedId((current) => current || nextCaptures.find((capture) => showBrowserTraffic || capture.source !== 'browser')?.id)
+  }
+
+  async function refreshCertificateStatus(): Promise<void> {
+    setCertificateChecking(true)
+    try {
+      setCertificateStatus(await window.steal.getCertificateStatus())
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCertificateChecking(false)
+    }
   }
 
   function navigate(): void {
@@ -240,6 +265,7 @@ export default function App(): JSX.Element {
     try {
       const next = transition === 'stopping' ? await window.steal.stopProxy() : await window.steal.startProxy()
       setStatus(next)
+      await refreshCertificateStatus()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -270,6 +296,20 @@ export default function App(): JSX.Element {
   async function launchChrome(): Promise<void> {
     await window.steal.launchChrome(address)
     setMessage('Chrome launched with Steal proxy.')
+  }
+
+  async function installCertificate(): Promise<void> {
+    setCertificateInstalling(true)
+    setMessage('')
+    try {
+      const nextCertificateStatus = await window.steal.installCertificate()
+      setCertificateStatus(nextCertificateStatus)
+      setMessage(nextCertificateStatus.trusted ? 'Certificate installed.' : 'Certificate install finished, but trust was not detected yet.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCertificateInstalling(false)
+    }
   }
 
   function handleBrowserButton(): void {
@@ -471,7 +511,6 @@ export default function App(): JSX.Element {
                   className="capture-webview"
                   src={browserUrl}
                   partition="persist:capture-browser"
-                  allowpopups="true"
                 />
                 <div
                   className="pane-resizer horizontal"
@@ -818,6 +857,33 @@ export default function App(): JSX.Element {
                     })
                   }}
                 />
+                <div className="setting-card certificate-card">
+                  <div>
+                    <strong>HTTPS certificate</strong>
+                    <span>Install the Steal local CA so HTTPS clients trust captured traffic.</span>
+                    <code>{certificateStatus.caCertPath || status.caCertPath || 'Certificate has not been generated yet.'}</code>
+                  </div>
+                  <div className="certificate-actions">
+                    <span className={certificateStatus.trusted ? 'certificate-indicator trusted' : certificateStatus.exists ? 'certificate-indicator warning' : 'certificate-indicator missing'}>
+                      {certificateStatus.trusted ? <ShieldCheck size={15} /> : <ShieldAlert size={15} />}
+                      {certificateChecking ? 'Checking...' : certificateStatus.trusted ? 'Installed' : certificateStatus.exists ? 'Not installed' : 'Not generated'}
+                    </span>
+                    <button
+                      className="primary-action"
+                      disabled={certificateInstalling || !certificateStatus.exists}
+                      onClick={() => void installCertificate()}
+                    >
+                      {certificateInstalling ? <span className="spinner" aria-hidden="true" /> : <ShieldCheck size={16} />}
+                      {certificateInstalling ? 'Installing...' : 'Install certificate'}
+                    </button>
+                    <button title="Refresh certificate status" onClick={() => void refreshCertificateStatus()}>
+                      <RefreshCcw size={16} />
+                    </button>
+                    <button title="Open certificate folder" onClick={() => window.steal.openCertificateFolder()}>
+                      <FolderOpen size={16} />
+                    </button>
+                  </div>
+                </div>
                 <SettingToggle
                   title="Show browser on launch"
                   description="Automatically opens the browser pane when Steal launches."

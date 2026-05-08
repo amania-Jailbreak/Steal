@@ -447,8 +447,14 @@ class SavedApiStore {
 }
 const execFileAsync = promisify(execFile);
 const defaultExecOptions = { encoding: "utf8", timeout: 8e3 };
+const windowsInternetSettingsKey = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
 let snapshot;
+let windowsSnapshot;
 async function enableSystemProxy(host, port) {
+  if (process.platform === "win32") {
+    await enableWindowsSystemProxy(host, port);
+    return;
+  }
   if (process.platform !== "darwin") return;
   const services = await listNetworkServices();
   if (!snapshot) {
@@ -466,6 +472,10 @@ async function enableSystemProxy(host, port) {
   }
 }
 async function restoreSystemProxy() {
+  if (process.platform === "win32") {
+    await restoreWindowsSystemProxy();
+    return;
+  }
   if (process.platform !== "darwin" || !snapshot) return;
   const previous = snapshot;
   snapshot = void 0;
@@ -475,6 +485,10 @@ async function restoreSystemProxy() {
   }
 }
 async function disableStealSystemProxy(host, port) {
+  if (process.platform === "win32") {
+    await disableWindowsSystemProxyIfMatches(host, port);
+    return;
+  }
   if (process.platform !== "darwin") return;
   const services = await listNetworkServices();
   for (const service of services) {
@@ -483,9 +497,39 @@ async function disableStealSystemProxy(host, port) {
   }
   snapshot = void 0;
 }
+async function enableWindowsSystemProxy(host, port) {
+  if (!windowsSnapshot) windowsSnapshot = await getWindowsProxySnapshot();
+  const proxyServer = `http=${host}:${port};https=${host}:${port}`;
+  await regAdd("ProxyEnable", "REG_DWORD", "1");
+  await regAdd("ProxyServer", "REG_SZ", proxyServer);
+  await regAdd("ProxyOverride", "REG_SZ", "<local>");
+  await regAdd("AutoDetect", "REG_DWORD", "0");
+  await regDelete("AutoConfigURL");
+  await notifyWindowsInternetSettingsChanged();
+}
+async function restoreWindowsSystemProxy() {
+  if (!windowsSnapshot) return;
+  const previous = windowsSnapshot;
+  windowsSnapshot = void 0;
+  await restoreWindowsValue("ProxyEnable", "REG_DWORD", previous.proxyEnable);
+  await restoreWindowsValue("ProxyServer", "REG_SZ", previous.proxyServer);
+  await restoreWindowsValue("ProxyOverride", "REG_SZ", previous.proxyOverride);
+  await restoreWindowsValue("AutoDetect", "REG_DWORD", previous.autoDetect);
+  await restoreWindowsValue("AutoConfigURL", "REG_SZ", previous.autoConfigURL);
+  await notifyWindowsInternetSettingsChanged();
+}
+async function disableWindowsSystemProxyIfMatches(host, port) {
+  const current = await getWindowsProxySnapshot();
+  if (current.proxyServer?.includes(`${host}:${port}`)) {
+    await regAdd("ProxyEnable", "REG_DWORD", "0");
+    await notifyWindowsInternetSettingsChanged();
+  }
+  windowsSnapshot = void 0;
+}
 async function isCertificateTrusted(certificatePath) {
-  if (process.platform !== "darwin") return true;
   if (!existsSync(certificatePath)) return false;
+  if (process.platform === "win32") return isWindowsCertificateTrusted(certificatePath);
+  if (process.platform !== "darwin") return true;
   try {
     await runExecFile("security", ["verify-cert", "-c", certificatePath, "-p", "ssl"]);
     return true;
@@ -494,7 +538,12 @@ async function isCertificateTrusted(certificatePath) {
   }
 }
 async function installTrustedCertificate(certificatePath) {
-  if (process.platform !== "darwin" || !existsSync(certificatePath)) return;
+  if (!existsSync(certificatePath)) return;
+  if (process.platform === "win32") {
+    await installWindowsTrustedCertificate(certificatePath);
+    return;
+  }
+  if (process.platform !== "darwin") return;
   const command = [
     "security",
     "add-trusted-cert",
@@ -558,6 +607,98 @@ async function runNetworksetup(args) {
       `do shell script ${appleScriptQuote(["networksetup", ...args].map(shellQuote).join(" "))} with administrator privileges`
     ], 15e3);
   }
+}
+async function getWindowsProxySnapshot() {
+  const [proxyEnable, proxyServer, proxyOverride, autoDetect, autoConfigURL] = await Promise.all([
+    regQuery("ProxyEnable"),
+    regQuery("ProxyServer"),
+    regQuery("ProxyOverride"),
+    regQuery("AutoDetect"),
+    regQuery("AutoConfigURL")
+  ]);
+  return { proxyEnable, proxyServer, proxyOverride, autoDetect, autoConfigURL };
+}
+async function restoreWindowsValue(name, type, value) {
+  if (value === void 0) {
+    await regDelete(name);
+    return;
+  }
+  await regAdd(name, type, value);
+}
+async function regQuery(name) {
+  try {
+    const { stdout } = await runExecFile("reg", ["query", windowsInternetSettingsKey, "/v", name]);
+    const line = stdout.split("\n").find((item) => item.includes(name));
+    if (!line) return void 0;
+    const match = line.trim().match(new RegExp(`^${name}\\s+REG_\\w+\\s+(.+)$`));
+    if (!match) return void 0;
+    return match[1].trim();
+  } catch {
+    return void 0;
+  }
+}
+async function regAdd(name, type, value) {
+  await runExecFile("reg", ["add", windowsInternetSettingsKey, "/v", name, "/t", type, "/d", value, "/f"]);
+}
+async function regDelete(name) {
+  try {
+    await runExecFile("reg", ["delete", windowsInternetSettingsKey, "/v", name, "/f"]);
+  } catch {
+  }
+}
+async function notifyWindowsInternetSettingsChanged() {
+  await runExecFile("powershell.exe", [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    `
+      $signature = @"
+      [DllImport("wininet.dll", SetLastError = true)]
+      public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+"@
+      $type = Add-Type -MemberDefinition $signature -Name WinInetSettings -Namespace Steal -PassThru
+      $type::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null
+      $type::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null
+    `
+  ], 8e3).catch(() => void 0);
+}
+async function isWindowsCertificateTrusted(certificatePath) {
+  const thumbprint = await getWindowsCertificateThumbprint(certificatePath);
+  if (!thumbprint) return false;
+  return await windowsStoreContainsCertificate("Root", thumbprint) || await windowsStoreContainsCertificate("Root", thumbprint, true) || await windowsStoreContainsNodeMitmProxyCa("Root") || await windowsStoreContainsNodeMitmProxyCa("Root", true);
+}
+async function installWindowsTrustedCertificate(certificatePath) {
+  await runExecFile("certutil", ["-user", "-addstore", "Root", certificatePath], 3e4);
+}
+async function getWindowsCertificateThumbprint(certificatePath) {
+  try {
+    const { stdout } = await runExecFile("certutil", ["-hashfile", certificatePath, "SHA1"]);
+    const line = stdout.split("\n").map((item) => item.trim()).find((item) => /^[a-fA-F0-9 ]{40,}$/.test(item));
+    return line?.replace(/\s+/g, "").toUpperCase();
+  } catch {
+    return void 0;
+  }
+}
+async function windowsStoreContainsCertificate(store, thumbprint, currentUser = false) {
+  const output = await readWindowsCertificateStore(store, currentUser);
+  return normalizeCertificateOutput(output).includes(thumbprint.toUpperCase());
+}
+async function windowsStoreContainsNodeMitmProxyCa(store, currentUser = false) {
+  const output = await readWindowsCertificateStore(store, currentUser);
+  return /CN=NodeMITMProxyCA/i.test(output);
+}
+async function readWindowsCertificateStore(store, currentUser = false) {
+  try {
+    const args = currentUser ? ["-user", "-store", store] : ["-store", store];
+    const { stdout } = await runExecFile("certutil", args, 2e4);
+    return stdout;
+  } catch {
+    return "";
+  }
+}
+function normalizeCertificateOutput(output) {
+  return output.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
 }
 function shellQuote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
@@ -735,6 +876,13 @@ function registerIpc() {
     const status = proxyService.getStatus();
     if (existsSync(status.sslCaDir)) await shell.openPath(status.sslCaDir);
   });
+  ipcMain.handle("cert:status", () => getCertificateStatus());
+  ipcMain.handle("cert:install", async () => {
+    const status = proxyService.getStatus();
+    if (!existsSync(status.caCertPath)) throw new Error("Start the proxy once to generate the Steal CA certificate.");
+    await installTrustedCertificate(status.caCertPath);
+    return getCertificateStatus();
+  });
   ipcMain.handle("browser:launch-chrome", (_event, url) => launchChromeBrowser(url));
 }
 async function startProxyWithSystemSetup() {
@@ -841,9 +989,10 @@ function createTrayIcon() {
   return image;
 }
 async function promptForCertificateInstallIfNeeded(status) {
-  if (process.platform !== "darwin" || certificatePromptInFlight || !existsSync(status.caCertPath)) return;
+  if (!["darwin", "win32"].includes(process.platform) || certificatePromptInFlight || !existsSync(status.caCertPath)) return;
   if (await isCertificateTrusted(status.caCertPath)) return;
   certificatePromptInFlight = true;
+  const installDetail = process.platform === "win32" ? "The certificate is not trusted yet. Install it into the current Windows user Trusted Root store?" : "The certificate is not trusted yet. Install it into the macOS System keychain using administrator privileges?";
   try {
     const result = await dialog.showMessageBox(mainWindow, {
       type: "warning",
@@ -852,13 +1001,22 @@ async function promptForCertificateInstallIfNeeded(status) {
       cancelId: 1,
       title: "Install Steal HTTPS Certificate",
       message: "HTTPS capture needs the Steal local CA certificate.",
-      detail: "The certificate is not trusted yet. Install it into the macOS System keychain using administrator privileges?"
+      detail: installDetail
     });
     if (result.response !== 0) return;
     await installTrustedCertificate(status.caCertPath);
   } finally {
     certificatePromptInFlight = false;
   }
+}
+async function getCertificateStatus() {
+  const status = proxyService.getStatus();
+  const exists = existsSync(status.caCertPath);
+  return {
+    caCertPath: status.caCertPath,
+    exists,
+    trusted: exists ? await isCertificateTrusted(status.caCertPath) : false
+  };
 }
 async function replay(request) {
   const startedAt = performance.now();

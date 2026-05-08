@@ -8,7 +8,7 @@ import { SettingsStore } from './settings-store'
 import { SavedApiStore } from './storage'
 import { disableStealSystemProxy, enableSystemProxy, installTrustedCertificate, isCertificateTrusted, restoreSystemProxy } from './system-proxy'
 import { decodeBodyText } from './body-decode'
-import type { ProxyStatus, ReplayRequest, ReplayResult, SavedApi } from '../shared/types'
+import type { CertificateStatus, ProxyStatus, ReplayRequest, ReplayResult, SavedApi } from '../shared/types'
 
 let mainWindow: BrowserWindow | undefined
 let proxyService: ProxyService
@@ -172,6 +172,13 @@ function registerIpc(): void {
     const status = proxyService.getStatus()
     if (existsSync(status.sslCaDir)) await shell.openPath(status.sslCaDir)
   })
+  ipcMain.handle('cert:status', () => getCertificateStatus())
+  ipcMain.handle('cert:install', async () => {
+    const status = proxyService.getStatus()
+    if (!existsSync(status.caCertPath)) throw new Error('Start the proxy once to generate the Steal CA certificate.')
+    await installTrustedCertificate(status.caCertPath)
+    return getCertificateStatus()
+  })
   ipcMain.handle('browser:launch-chrome', (_event, url: string) => launchChromeBrowser(url))
 }
 
@@ -287,9 +294,12 @@ function createTrayIcon(): Electron.NativeImage {
 }
 
 async function promptForCertificateInstallIfNeeded(status: ProxyStatus): Promise<void> {
-  if (process.platform !== 'darwin' || certificatePromptInFlight || !existsSync(status.caCertPath)) return
+  if (!['darwin', 'win32'].includes(process.platform) || certificatePromptInFlight || !existsSync(status.caCertPath)) return
   if (await isCertificateTrusted(status.caCertPath)) return
   certificatePromptInFlight = true
+  const installDetail = process.platform === 'win32'
+    ? 'The certificate is not trusted yet. Install it into the current Windows user Trusted Root store?'
+    : 'The certificate is not trusted yet. Install it into the macOS System keychain using administrator privileges?'
   try {
     const result = await dialog.showMessageBox(mainWindow, {
       type: 'warning',
@@ -298,12 +308,22 @@ async function promptForCertificateInstallIfNeeded(status: ProxyStatus): Promise
       cancelId: 1,
       title: 'Install Steal HTTPS Certificate',
       message: 'HTTPS capture needs the Steal local CA certificate.',
-      detail: 'The certificate is not trusted yet. Install it into the macOS System keychain using administrator privileges?'
+      detail: installDetail
     })
     if (result.response !== 0) return
     await installTrustedCertificate(status.caCertPath)
   } finally {
     certificatePromptInFlight = false
+  }
+}
+
+async function getCertificateStatus(): Promise<CertificateStatus> {
+  const status = proxyService.getStatus()
+  const exists = existsSync(status.caCertPath)
+  return {
+    caCertPath: status.caCertPath,
+    exists,
+    trusted: exists ? await isCertificateTrusted(status.caCertPath) : false
   }
 }
 

@@ -21,6 +21,8 @@ const api: AppApi = {
   launchChrome: (url: string) => ipcRenderer.invoke('browser:launch-chrome', url),
   copyText: async (text: string) => clipboard.writeText(text),
   openCertificateFolder: () => ipcRenderer.invoke('cert:open-folder'),
+  getCertificateStatus: () => ipcRenderer.invoke('cert:status'),
+  installCertificate: () => ipcRenderer.invoke('cert:install'),
   onCapture: (callback: (exchange: CapturedExchange) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, exchange: CapturedExchange): void => callback(exchange)
     ipcRenderer.on('captures:new', listener)

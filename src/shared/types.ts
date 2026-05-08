@@ -33,6 +33,12 @@ export interface ProxyStatus {
   error?: string
 }
 
+export interface CertificateStatus {
+  caCertPath: string
+  exists: boolean
+  trusted: boolean
+}
+
 export interface SavedApi {
   id: string
   name: string
@@ -95,6 +101,8 @@ export interface AppApi {
   launchChrome: (url: string) => Promise<void>
   copyText: (text: string) => Promise<void>
   openCertificateFolder: () => Promise<void>
+  getCertificateStatus: () => Promise<CertificateStatus>
+  installCertificate: () => Promise<CertificateStatus>
   onCapture: (callback: (exchange: CapturedExchange) => void) => () => void
   onProxyStatus: (callback: (status: ProxyStatus) => void) => () => void
 }
