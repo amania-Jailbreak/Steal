@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, session, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell, session, Tray } from 'electron'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -7,9 +7,10 @@ import { ProxyService } from './proxy-service'
 import { SettingsStore } from './settings-store'
 import { SavedApiStore } from './storage'
 import { ThemeStore } from './theme-store'
+import { capturesFromHar, capturesToHar } from './har'
 import { disableStealSystemProxy, enableSystemProxy, installTrustedCertificate, isCertificateTrusted, restoreSystemProxy } from './system-proxy'
 import { decodeBody } from './body-decode'
-import type { AppTheme, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi } from '../shared/types'
+import type { AppTheme, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi } from '../shared/types'
 
 let mainWindow: BrowserWindow | undefined
 let proxyService: ProxyService
@@ -152,6 +153,9 @@ function registerIpc(): void {
     await setThemeHotReload(enabled)
     return themeHotReloadEnabled
   })
+  ipcMain.handle('clipboard:write-text', (_event, text: string) => {
+    clipboard.writeText(text)
+  })
   ipcMain.handle('proxy:status', () => proxyService.getStatus())
   ipcMain.handle('proxy:start', () => startProxyWithSystemSetup())
   ipcMain.handle('proxy:stop', () => stopProxyWithSystemRestore())
@@ -167,6 +171,28 @@ function registerIpc(): void {
   ipcMain.handle('captures:pause', (_event, paused: boolean) => proxyService.setCapturePaused(paused))
   ipcMain.handle('captures:clear', () => {
     proxyService.clearCaptures()
+  })
+  ipcMain.handle('captures:export-har', async (_event, captures: CapturedExchange[]) => {
+    const exportCaptures = Array.isArray(captures) ? captures : proxyService.getCaptures()
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: 'Export captures as HAR',
+      defaultPath: 'steal-captures.har',
+      filters: [{ name: 'HAR', extensions: ['har', 'json'] }]
+    })
+    if (canceled || !filePath) return undefined
+    await writeFile(filePath, JSON.stringify(capturesToHar(exportCaptures), null, 2))
+    return filePath
+  })
+  ipcMain.handle('captures:import-har', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Import HAR',
+      properties: ['openFile'],
+      filters: [{ name: 'HAR', extensions: ['har', 'json'] }]
+    })
+    if (canceled || filePaths.length === 0) return []
+    const raw = await readFile(filePaths[0], 'utf8')
+    const captures = capturesFromHar(JSON.parse(raw))
+    return captures
   })
   ipcMain.handle('saved:list', () => savedApiStore.list())
   ipcMain.handle('collections:list', () => savedApiStore.listCollections())

@@ -1,4 +1,4 @@
-import { clipboard, contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import type { AppApi, AppSettings, AppTheme, CapturedExchange, CollectionSettings, ProxyStatus, ReplayRequest } from '../shared/types'
 
 const api: AppApi = {
@@ -12,6 +12,8 @@ const api: AppApi = {
   disableSystemProxy: () => ipcRenderer.invoke('system-proxy:disable'),
   clearCaptures: () => ipcRenderer.invoke('captures:clear'),
   getCaptures: () => ipcRenderer.invoke('captures:list'),
+  exportHar: (captures: CapturedExchange[]) => ipcRenderer.invoke('captures:export-har', captures),
+  importHar: () => ipcRenderer.invoke('captures:import-har'),
   saveApi: (exchangeId: string, name: string, tags: string[], collectionName: string) =>
     ipcRenderer.invoke('saved:save', { exchangeId, name, tags, collectionName }),
   listCollections: () => ipcRenderer.invoke('collections:list'),
@@ -22,7 +24,7 @@ const api: AppApi = {
   importSavedApis: () => ipcRenderer.invoke('saved:import'),
   replay: (request: ReplayRequest) => ipcRenderer.invoke('replay:send', request),
   launchChrome: (url: string) => ipcRenderer.invoke('browser:launch-chrome', url),
-  copyText: async (text: string) => clipboard.writeText(text),
+  copyText: (text: string) => ipcRenderer.invoke('clipboard:write-text', text),
   openCertificateFolder: () => ipcRenderer.invoke('cert:open-folder'),
   getCertificateStatus: () => ipcRenderer.invoke('cert:status'),
   installCertificate: () => ipcRenderer.invoke('cert:install'),

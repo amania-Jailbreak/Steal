@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type SetStateAction } from 'react'
 import { createRoot } from 'react-dom/client'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import xml from 'highlight.js/lib/languages/xml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
-import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Folder, FolderOpen, Funnel, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
+import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Clock3, Eye, EyeOff, FileDown, FileUp, Folder, FolderOpen, Funnel, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RadioTower, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
 import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection } from '../../shared/types'
 import './styles.css'
 
@@ -14,13 +14,30 @@ type DetailTab = 'headers' | 'body' | 'response'
 type HeaderMode = 'table' | 'raw'
 type CodeLanguage = 'json' | 'javascript' | 'xml' | 'plaintext'
 type RequestEditorTab = 'query' | 'headers' | 'body'
-type ResponseViewerTab = 'headers' | 'body' | 'metrics'
+type ResponseViewerTab = 'headers' | 'body' | 'diff' | 'metrics'
 type SettingsCategory = 'startup' | 'browser' | 'theme'
 type CollectionSettingsTab = 'variables' | 'headers' | 'cookies' | 'user-agent'
 type ResourceFilter = 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
 type KeyValueRow = { id: string; key: string; value: string; enabled: boolean }
 type CaptureContextMenu = { capture: CapturedExchange; x: number; y: number }
 type CollectionContextMenu = { collection: SavedCollection; x: number; y: number }
+type CaptureTabContextMenu = { tab: CaptureTab; x: number; y: number }
+type FocusHint = { text: string; x: number; y: number }
+type CaptureFilters = {
+  query: string
+  showFilterPanel: boolean
+  appBrowserOnly: boolean
+  resourceFilter: ResourceFilter
+  selectedDomains: string[]
+}
+type CaptureTabKind = 'live' | 'live-view' | 'snapshot' | 'har'
+type CaptureTab = {
+  id: string
+  title: string
+  kind: CaptureTabKind
+  filters: CaptureFilters
+  captures?: CapturedExchange[]
+}
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('json', json)
@@ -47,6 +64,8 @@ const MAX_DETAILS_WIDTH = 760
 const MIN_CENTER_WIDTH = 460
 const MIN_BROWSER_HEIGHT = 220
 const MIN_NETWORK_HEIGHT = 150
+const CAPTURE_ROW_HEIGHT = 29
+const CAPTURE_ROW_OVERSCAN = 10
 const resourceFilters: Array<{ id: ResourceFilter; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'fetch', label: 'Fetch/XHR' },
@@ -61,6 +80,21 @@ const resourceFilters: Array<{ id: ResourceFilter; label: string }> = [
   { id: 'wasm', label: 'Wasm' },
   { id: 'other', label: 'Other' }
 ]
+
+const defaultCaptureFilters: CaptureFilters = {
+  query: '',
+  showFilterPanel: false,
+  appBrowserOnly: false,
+  resourceFilter: 'all',
+  selectedDomains: []
+}
+
+const liveCaptureTab: CaptureTab = {
+  id: 'live',
+  title: 'Live',
+  kind: 'live',
+  filters: defaultCaptureFilters
+}
 const defaultAppSettings: AppSettings = {
   autoStartProxy: true,
   systemProxyEnabled: true,
@@ -136,10 +170,13 @@ export default function App(): JSX.Element {
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
   const workspaceRef = useRef<HTMLElement | null>(null)
   const browserPaneRef = useRef<HTMLElement | null>(null)
+  const captureTableRef = useRef<HTMLDivElement | null>(null)
   const [address, setAddress] = useState('https://www.google.com')
   const [browserUrl, setBrowserUrl] = useState('https://www.google.com')
   const [detailsWidth, setDetailsWidth] = useState(420)
   const [networkHeight, setNetworkHeight] = useState(270)
+  const [captureTableHeight, setCaptureTableHeight] = useState(0)
+  const [captureTableScrollTop, setCaptureTableScrollTop] = useState(0)
   const [status, setStatus] = useState<ProxyStatus>(emptyStatus)
   const [certificateStatus, setCertificateStatus] = useState<CertificateStatus>(emptyCertificateStatus)
   const [platform, setPlatform] = useState<AppPlatform>()
@@ -148,16 +185,14 @@ export default function App(): JSX.Element {
   const [collections, setCollections] = useState<SavedCollection[]>([])
   const [savedApis, setSavedApis] = useState<SavedApi[]>([])
   const [selectedId, setSelectedId] = useState<string>()
+  const [captureTabs, setCaptureTabs] = useState<CaptureTab[]>([liveCaptureTab])
+  const [activeCaptureTabId, setActiveCaptureTabId] = useState('live')
+  const [draggingCaptureTabId, setDraggingCaptureTabId] = useState<string>()
   const [selectedCollectionId, setSelectedCollectionId] = useState<string>()
   const [selectedSavedApiId, setSelectedSavedApiId] = useState<string>()
   const [openSavedApiIds, setOpenSavedApiIds] = useState<string[]>([])
   const [draggingSavedApiId, setDraggingSavedApiId] = useState<string>()
   const [expandedCollectionIds, setExpandedCollectionIds] = useState<Set<string>>(new Set())
-  const [query, setQuery] = useState('')
-  const [showFilterPanel, setShowFilterPanel] = useState(false)
-  const [appBrowserOnly, setAppBrowserOnly] = useState(false)
-  const [resourceFilter, setResourceFilter] = useState<ResourceFilter>('all')
-  const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set())
   const [activeMode, setActiveMode] = useState<AppMode>('capture')
   const [tab, setTab] = useState<DetailTab>('headers')
   const [headerMode, setHeaderMode] = useState<HeaderMode>('table')
@@ -167,6 +202,9 @@ export default function App(): JSX.Element {
   const [saveTags, setSaveTags] = useState('')
   const [saveCollectionName, setSaveCollectionName] = useState('Default')
   const [contextMenu, setContextMenu] = useState<CaptureContextMenu>()
+  const [captureTabContextMenu, setCaptureTabContextMenu] = useState<CaptureTabContextMenu>()
+  const [renameCaptureTabTarget, setRenameCaptureTabTarget] = useState<CaptureTab>()
+  const [renameCaptureTabName, setRenameCaptureTabName] = useState('')
   const [collectionContextMenu, setCollectionContextMenu] = useState<CollectionContextMenu>()
   const [collectionSettingsTarget, setCollectionSettingsTarget] = useState<SavedCollection>()
   const [collectionVariableRows, setCollectionVariableRows] = useState<KeyValueRow[]>([])
@@ -197,6 +235,7 @@ export default function App(): JSX.Element {
   const [certificateInstalling, setCertificateInstalling] = useState(false)
   const [certificateChecking, setCertificateChecking] = useState(false)
   const [message, setMessage] = useState('')
+  const [focusHint, setFocusHint] = useState<FocusHint>()
 
   useEffect(() => {
     void refreshAll()
@@ -212,6 +251,75 @@ export default function App(): JSX.Element {
     return () => {
       removeCapture()
       removeStatus()
+    }
+  }, [])
+
+  useEffect(() => {
+    let timer: number | undefined
+    let activeElement: HTMLElement | undefined
+
+    const restoreTitle = (): void => {
+      if (!activeElement) return
+      const originalTitle = activeElement.dataset.stealHintTitle
+      if (originalTitle !== undefined) {
+        activeElement.setAttribute('title', originalTitle)
+        delete activeElement.dataset.stealHintTitle
+      }
+      activeElement = undefined
+    }
+
+    const hideHint = (): void => {
+      if (timer !== undefined) window.clearTimeout(timer)
+      timer = undefined
+      setFocusHint(undefined)
+      restoreTitle()
+    }
+
+    const showHintLater = (target: EventTarget | null): void => {
+      const element = target instanceof HTMLElement
+        ? target.closest<HTMLElement>('[data-hint], [title], [aria-label]')
+        : undefined
+      const text = element?.dataset.hint || element?.getAttribute('title') || element?.getAttribute('aria-label') || ''
+      if (!element || !text.trim()) return
+
+      hideHint()
+      activeElement = element
+      const title = element.getAttribute('title')
+      if (title !== null) {
+        element.dataset.stealHintTitle = title
+        element.removeAttribute('title')
+      }
+
+      timer = window.setTimeout(() => {
+        const rect = element.getBoundingClientRect()
+        const x = clamp(rect.left + rect.width / 2, 18, window.innerWidth - 18)
+        const y = rect.bottom + 10 > window.innerHeight - 34 ? rect.top - 34 : rect.bottom + 10
+        setFocusHint({ text, x, y: Math.max(10, y) })
+      }, 650)
+    }
+
+    const onMouseEnter = (event: MouseEvent): void => showHintLater(event.target)
+    const onFocusIn = (event: FocusEvent): void => showHintLater(event.target)
+
+    document.addEventListener('mouseover', onMouseEnter)
+    document.addEventListener('focusin', onFocusIn)
+    document.addEventListener('mouseout', hideHint)
+    document.addEventListener('focusout', hideHint)
+    document.addEventListener('click', hideHint)
+    document.addEventListener('keydown', hideHint)
+    window.addEventListener('scroll', hideHint, true)
+    window.addEventListener('resize', hideHint)
+
+    return () => {
+      hideHint()
+      document.removeEventListener('mouseover', onMouseEnter)
+      document.removeEventListener('focusin', onFocusIn)
+      document.removeEventListener('mouseout', hideHint)
+      document.removeEventListener('focusout', hideHint)
+      document.removeEventListener('click', hideHint)
+      document.removeEventListener('keydown', hideHint)
+      window.removeEventListener('scroll', hideHint, true)
+      window.removeEventListener('resize', hideHint)
     }
   }, [])
 
@@ -247,10 +355,20 @@ export default function App(): JSX.Element {
 
   const embeddedBrowserVisible = showBrowser && settings.browserMode === 'embedded'
   const showBrowserTraffic = settings.browserMode === 'chrome' || showBrowser
+  const activeCaptureTab = useMemo(() => {
+    return captureTabs.find((captureTab) => captureTab.id === activeCaptureTabId) || captureTabs[0] || liveCaptureTab
+  }, [activeCaptureTabId, captureTabs])
+  const activeCaptureFilters = activeCaptureTab.filters
+  const query = activeCaptureFilters.query
+  const showFilterPanel = activeCaptureFilters.showFilterPanel
+  const appBrowserOnly = activeCaptureFilters.appBrowserOnly
+  const resourceFilter = activeCaptureFilters.resourceFilter
+  const selectedDomains = useMemo(() => new Set(activeCaptureFilters.selectedDomains), [activeCaptureFilters.selectedDomains])
+  const tabCaptures = activeCaptureTab.kind === 'live' || activeCaptureTab.kind === 'live-view' ? captures : activeCaptureTab.captures || []
 
   const selected = useMemo(() => {
-    return captures.find((capture) => capture.id === selectedId && (showBrowserTraffic || capture.source !== 'browser'))
-  }, [captures, selectedId, showBrowserTraffic])
+    return tabCaptures.find((capture) => capture.id === selectedId && (showBrowserTraffic || capture.source !== 'browser'))
+  }, [selectedId, showBrowserTraffic, tabCaptures])
 
   const detailSearchCount = useMemo(() => {
     if (!selected || !detailSearch.trim()) return 0
@@ -258,21 +376,32 @@ export default function App(): JSX.Element {
   }, [detailSearch, headerMode, selected, tab])
 
   const filteredCaptures = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    const sourceFiltered = showBrowserTraffic ? captures : captures.filter((capture) => capture.source !== 'browser')
+    const tokens = searchTokens(query)
+    const sourceFiltered = showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser')
     if (!showFilterPanel) return sourceFiltered
     return sourceFiltered.filter((capture) => {
       if (appBrowserOnly && capture.source !== 'browser') return false
       if (resourceFilter !== 'all' && classifyResource(capture) !== resourceFilter) return false
       const domain = domainFromCapture(capture)
       if (selectedDomains.size > 0 && !selectedDomains.has(domain)) return false
-      return !needle || captureMatchesQuery(capture, needle)
+      return tokens.length === 0 || captureMatchesQuery(capture, tokens)
     })
-  }, [appBrowserOnly, captures, query, resourceFilter, selectedDomains, showBrowserTraffic, showFilterPanel])
+  }, [appBrowserOnly, query, resourceFilter, selectedDomains, showBrowserTraffic, showFilterPanel, tabCaptures])
+
+  const visibleCaptureWindow = useMemo(() => {
+    const startIndex = Math.max(0, Math.floor(captureTableScrollTop / CAPTURE_ROW_HEIGHT) - CAPTURE_ROW_OVERSCAN)
+    const visibleCount = Math.ceil((captureTableHeight || 1) / CAPTURE_ROW_HEIGHT) + CAPTURE_ROW_OVERSCAN * 2
+    const endIndex = Math.min(filteredCaptures.length, startIndex + visibleCount)
+    return {
+      captures: filteredCaptures.slice(startIndex, endIndex),
+      offsetTop: startIndex * CAPTURE_ROW_HEIGHT,
+      totalHeight: filteredCaptures.length * CAPTURE_ROW_HEIGHT
+    }
+  }, [captureTableHeight, captureTableScrollTop, filteredCaptures])
 
   const availableDomains = useMemo(() => {
     const counts = new Map<string, number>()
-    const sourceFiltered = showBrowserTraffic ? captures : captures.filter((capture) => capture.source !== 'browser')
+    const sourceFiltered = showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser')
     for (const capture of sourceFiltered) {
       const domain = domainFromCapture(capture)
       counts.set(domain, (counts.get(domain) || 0) + 1)
@@ -280,7 +409,7 @@ export default function App(): JSX.Element {
     return Array.from(counts.entries())
       .map(([domain, count]) => ({ domain, count }))
       .sort((left, right) => left.domain.localeCompare(right.domain))
-  }, [captures, showBrowserTraffic])
+  }, [showBrowserTraffic, tabCaptures])
 
   const selectedCollection = useMemo(() => {
     return collections.find((collection) => collection.id === selectedCollectionId) || collections[0]
@@ -323,6 +452,53 @@ export default function App(): JSX.Element {
     if (selected) return
     setSelectedId(filteredCaptures[0]?.id)
   }, [filteredCaptures, selected])
+
+  useEffect(() => {
+    const element = captureTableRef.current
+    if (!element) return
+
+    const updateHeight = (): void => setCaptureTableHeight(element.clientHeight)
+    updateHeight()
+    const observer = new ResizeObserver(updateHeight)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const element = captureTableRef.current
+    if (element) element.scrollTop = 0
+    setCaptureTableScrollTop(0)
+  }, [activeCaptureTabId, appBrowserOnly, query, resourceFilter, selectedDomains, showFilterPanel])
+
+  function updateActiveCaptureFilters(patch: Partial<CaptureFilters>): void {
+    setCaptureTabs((current) => current.map((captureTab) => (
+      captureTab.id === activeCaptureTabId
+        ? { ...captureTab, filters: { ...captureTab.filters, ...patch } }
+        : captureTab
+    )))
+  }
+
+  function setQuery(value: string): void {
+    updateActiveCaptureFilters({ query: value })
+  }
+
+  function setShowFilterPanel(value: SetStateAction<boolean>): void {
+    const next = typeof value === 'function' ? value(showFilterPanel) : value
+    updateActiveCaptureFilters({ showFilterPanel: next })
+  }
+
+  function setAppBrowserOnly(value: SetStateAction<boolean>): void {
+    const next = typeof value === 'function' ? value(appBrowserOnly) : value
+    updateActiveCaptureFilters({ appBrowserOnly: next })
+  }
+
+  function setResourceFilter(value: ResourceFilter): void {
+    updateActiveCaptureFilters({ resourceFilter: value })
+  }
+
+  function setSelectedDomains(value: Set<string>): void {
+    updateActiveCaptureFilters({ selectedDomains: Array.from(value) })
+  }
 
   useEffect(() => {
     if (!selectedSavedApi) return
@@ -394,9 +570,124 @@ export default function App(): JSX.Element {
   }
 
   async function clearCaptures(): Promise<void> {
-    await window.steal.clearCaptures()
-    setCaptures([])
+    if (activeCaptureTab.kind === 'live') {
+      await window.steal.clearCaptures()
+      setCaptures([])
+    } else if (activeCaptureTab.kind === 'live-view') {
+      closeCaptureTab(activeCaptureTab.id)
+    } else {
+      setCaptureTabs((current) => current.map((captureTab) => (
+        captureTab.id === activeCaptureTab.id ? { ...captureTab, captures: [] } : captureTab
+      )))
+    }
     setSelectedId(undefined)
+  }
+
+  async function exportHar(): Promise<void> {
+    const filePath = await window.steal.exportHar(tabCaptures)
+    if (filePath) setMessage(`Exported HAR: ${filePath}`)
+  }
+
+  async function importHar(): Promise<void> {
+    const importedCaptures = await window.steal.importHar()
+    if (importedCaptures.length === 0) return
+    const tabId = openCaptureTab('har', `HAR ${captureTabs.filter((captureTab) => captureTab.kind === 'har').length + 1}`, importedCaptures)
+    setActiveCaptureTabId(tabId)
+    setSelectedId(importedCaptures[0]?.id)
+    setMessage(`Imported HAR: ${importedCaptures.length} captures`)
+  }
+
+  function openLiveViewTab(): void {
+    const tabId = openCaptureTab('live-view', `View ${captureTabs.filter((captureTab) => captureTab.kind === 'live-view').length + 1}`)
+    setActiveCaptureTabId(tabId)
+  }
+
+  function openSnapshotTab(): void {
+    const snapshotCaptures = [...filteredCaptures]
+    const tabId = openCaptureTab('snapshot', `Snapshot ${captureTabs.filter((captureTab) => captureTab.kind === 'snapshot').length + 1}`, snapshotCaptures)
+    setActiveCaptureTabId(tabId)
+    setSelectedId(snapshotCaptures[0]?.id)
+  }
+
+  function openCaptureTab(kind: Exclude<CaptureTabKind, 'live'>, title: string, tabCaptureList?: CapturedExchange[]): string {
+    const id = `capture-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    setCaptureTabs((current) => [
+      ...current,
+      {
+        id,
+        title,
+        kind,
+        filters: { ...defaultCaptureFilters },
+        captures: tabCaptureList
+      }
+    ])
+    return id
+  }
+
+  function selectCaptureTab(tabId: string): void {
+    setActiveCaptureTabId(tabId)
+    setSelectedId(undefined)
+  }
+
+  function closeCaptureTab(tabId: string): void {
+    if (tabId === 'live') return
+    setCaptureTabs((current) => {
+      const index = current.findIndex((captureTab) => captureTab.id === tabId)
+      const next = current.filter((captureTab) => captureTab.id !== tabId)
+      if (activeCaptureTabId === tabId) {
+        const fallback = next[Math.min(Math.max(index - 1, 0), next.length - 1)] || next[0] || liveCaptureTab
+        setActiveCaptureTabId(fallback.id)
+        setSelectedId(undefined)
+      }
+      return next
+    })
+  }
+
+  function duplicateCaptureTab(tab: CaptureTab): void {
+    const id = `capture-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const duplicate: CaptureTab = {
+      ...tab,
+      id,
+      title: `${tab.title} Copy`,
+      kind: tab.kind === 'live' ? 'live-view' : tab.kind,
+      filters: {
+        ...tab.filters,
+        selectedDomains: [...tab.filters.selectedDomains]
+      },
+      captures: tab.kind === 'live' || tab.kind === 'live-view' ? undefined : [...(tab.captures || [])]
+    }
+    setCaptureTabs((current) => [...current, duplicate])
+    setActiveCaptureTabId(id)
+    setSelectedId(undefined)
+  }
+
+  function openRenameCaptureTab(tab: CaptureTab): void {
+    setRenameCaptureTabTarget(tab)
+    setRenameCaptureTabName(tab.title)
+  }
+
+  function renameCaptureTab(): void {
+    if (!renameCaptureTabTarget) return
+    const nextName = renameCaptureTabName.trim()
+    if (!nextName) return
+    setCaptureTabs((current) => current.map((captureTab) => (
+      captureTab.id === renameCaptureTabTarget.id ? { ...captureTab, title: nextName } : captureTab
+    )))
+    setRenameCaptureTabTarget(undefined)
+  }
+
+  function moveCaptureTab(sourceId: string, targetId: string): void {
+    if (sourceId === targetId || sourceId === 'live' || targetId === 'live') return
+    setCaptureTabs((current) => {
+      const sourceIndex = current.findIndex((captureTab) => captureTab.id === sourceId)
+      const targetIndex = current.findIndex((captureTab) => captureTab.id === targetId)
+      if (sourceIndex <= 0 || targetIndex <= 0) return current
+
+      const next = [...current]
+      const [movedTab] = next.splice(sourceIndex, 1)
+      next.splice(targetIndex, 0, movedTab)
+      return next
+    })
   }
 
   async function toggleCapturePaused(): Promise<void> {
@@ -549,13 +840,21 @@ export default function App(): JSX.Element {
   }
 
   async function copyCaptureUrl(capture: CapturedExchange): Promise<void> {
-    await window.steal.copyText(capture.url)
-    setMessage('Copied URL')
+    try {
+      await window.steal.copyText(capture.url)
+      setMessage('Copied URL')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    }
   }
 
   async function copyCaptureAsCurl(capture: CapturedExchange): Promise<void> {
-    await window.steal.copyText(captureToCurl(capture))
-    setMessage('Copied as cURL')
+    try {
+      await window.steal.copyText(captureToCurl(capture))
+      setMessage('Copied as cURL')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    }
   }
 
   function openCollectionSettings(collection: SavedCollection): void {
@@ -708,7 +1007,7 @@ export default function App(): JSX.Element {
       <header className="topbar">
         <div className="topbar-summary">
           <strong>{modeTitle(activeMode)}</strong>
-          <span>{modeSummary(activeMode, filteredCaptures.length, captures.length, collections.length, savedApis.length)}</span>
+          <span>{modeSummary(activeMode, filteredCaptures.length, tabCaptures.length, collections.length, savedApis.length)}</span>
           {activeMode === 'capture' && (
             <em className={showFilterPanel && (query || selectedDomains.size > 0 || appBrowserOnly || resourceFilter !== 'all') ? 'summary-chip active' : 'summary-chip'}>
               {showFilterPanel ? 'Filter ON' : 'Filter OFF'}
@@ -781,8 +1080,80 @@ export default function App(): JSX.Element {
               </>
             )}
             <div className="network-panel">
+              <div className="capture-tab-bar">
+                {captureTabs.map((captureTab) => (
+                  <div
+                    key={captureTab.id}
+                    className={[
+                      'capture-tab',
+                      activeCaptureTab.id === captureTab.id ? 'active' : '',
+                      draggingCaptureTabId === captureTab.id ? 'dragging' : ''
+                    ].filter(Boolean).join(' ')}
+                    draggable={captureTab.id !== 'live'}
+                    role="button"
+                    tabIndex={0}
+                    title={captureTab.kind === 'live' || captureTab.kind === 'live-view' ? 'Live captures' : `${captureTab.captures?.length || 0} captures`}
+                    onDragStart={(event) => {
+                      if (captureTab.id === 'live') return
+                      setDraggingCaptureTabId(captureTab.id)
+                      event.dataTransfer.effectAllowed = 'move'
+                      event.dataTransfer.setData('text/plain', captureTab.id)
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      const sourceId = draggingCaptureTabId || event.dataTransfer.getData('text/plain')
+                      if (sourceId) moveCaptureTab(sourceId, captureTab.id)
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      const sourceId = draggingCaptureTabId || event.dataTransfer.getData('text/plain')
+                      if (sourceId) moveCaptureTab(sourceId, captureTab.id)
+                      setDraggingCaptureTabId(undefined)
+                    }}
+                    onDragEnd={() => setDraggingCaptureTabId(undefined)}
+                    onClick={() => selectCaptureTab(captureTab.id)}
+                    onContextMenu={(event) => {
+                      event.preventDefault()
+                      setActiveCaptureTabId(captureTab.id)
+                      setCaptureTabContextMenu({ tab: captureTab, x: event.clientX, y: event.clientY })
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return
+                      event.preventDefault()
+                      selectCaptureTab(captureTab.id)
+                    }}
+                  >
+                    <span className="capture-tab-icon">
+                      <CaptureTabIcon kind={captureTab.kind} />
+                    </span>
+                    <strong>{captureTab.title}</strong>
+                    {captureTab.filters.showFilterPanel && <span className="capture-tab-dot" />}
+                    {captureTab.id !== 'live' && (
+                      <span
+                        className="capture-tab-close"
+                        role="button"
+                        tabIndex={0}
+                        title="Close tab"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          closeCaptureTab(captureTab.id)
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return
+                          event.preventDefault()
+                          event.stopPropagation()
+                          closeCaptureTab(captureTab.id)
+                        }}
+                      >
+                        <X size={13} />
+                      </span>
+                    )}
+                  </div>
+                ))}
+                <button title="New live view tab" onClick={openLiveViewTab}><Plus size={15} /></button>
+              </div>
               <div className="pane-heading">
-                <span>Captured Traffic</span>
+                <span>{activeCaptureTab.title}</span>
                 <div className="inline-actions">
                   <button
                     className={embeddedBrowserVisible || settings.browserMode === 'chrome' ? 'browser-toggle active' : 'browser-toggle'}
@@ -806,6 +1177,9 @@ export default function App(): JSX.Element {
                   >
                     {status.capturePaused ? <Play size={15} /> : <Pause size={15} />}
                   </button>
+                  <button title="Snapshot filtered captures" onClick={openSnapshotTab} disabled={filteredCaptures.length === 0}><Clock3 size={15} /></button>
+                  <button title="Save HAR" onClick={() => void exportHar()} disabled={tabCaptures.length === 0}><FileUp size={15} /></button>
+                  <button title="Import HAR" onClick={() => void importHar()}><FileDown size={15} /></button>
                   <button title="Clear captures" onClick={clearCaptures}><Trash2 size={15} /></button>
                 </div>
               </div>
@@ -818,7 +1192,7 @@ export default function App(): JSX.Element {
                         <div className="filter-heading-actions">
                           <button
                             className={appBrowserOnly ? 'source-icon-filter active' : 'source-icon-filter'}
-                            title={`App Browser only (${captures.filter((capture) => capture.source === 'browser').length})`}
+                            title={`App Browser only (${tabCaptures.filter((capture) => capture.source === 'browser').length})`}
                             onClick={() => setAppBrowserOnly((current) => !current)}
                           >
                             <Monitor size={14} />
@@ -869,25 +1243,34 @@ export default function App(): JSX.Element {
                     </div>
                   </aside>
                 )}
-                <div className="capture-table">
-                  {filteredCaptures.map((capture) => (
-                    <button
-                      key={capture.id}
-                      className={selectedId === capture.id ? 'capture-row active' : 'capture-row'}
-                      onClick={() => setSelectedId(capture.id)}
-                      onContextMenu={(event) => {
-                        event.preventDefault()
-                        setSelectedId(capture.id)
-                        setContextMenu({ capture, x: event.clientX, y: event.clientY })
-                      }}
-                    >
-                      <span className={`method ${capture.method.toLowerCase()}`}>{capture.method}</span>
-                      <span className="url-cell">{capture.url}</span>
-                      <span>{capture.responseStatusCode || '-'}</span>
-                      <span>{capture.durationMs}ms</span>
-                      <span>{formatBytes(capture.responseSize)}</span>
-                    </button>
-                  ))}
+                <div
+                  ref={captureTableRef}
+                  className="capture-table"
+                  onScroll={(event) => setCaptureTableScrollTop(event.currentTarget.scrollTop)}
+                >
+                  <div className="capture-table-spacer" style={{ height: visibleCaptureWindow.totalHeight }}>
+                    <div className="capture-rows-virtual" style={{ transform: `translateY(${visibleCaptureWindow.offsetTop}px)` }}>
+                      {visibleCaptureWindow.captures.map((capture) => (
+                        <button
+                          key={capture.id}
+                          className={selectedId === capture.id ? 'capture-row active' : 'capture-row'}
+                          onClick={() => setSelectedId(capture.id)}
+                          onContextMenu={(event) => {
+                            event.preventDefault()
+                            setSelectedId(capture.id)
+                            setContextMenu({ capture, x: event.clientX, y: event.clientY })
+                          }}
+                        >
+                          <span className={`method ${capture.method.toLowerCase()}`}>{capture.method}</span>
+                          <img className="capture-favicon" src={faviconUrl(capture.url)} alt="" loading="lazy" />
+                          <span className="url-cell">{capture.url}</span>
+                          <span>{capture.responseStatusCode || '-'}</span>
+                          <span>{capture.durationMs}ms</span>
+                          <span>{formatBytes(capture.responseSize)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1120,6 +1503,7 @@ export default function App(): JSX.Element {
                       <div className="test-tabs response-tabs">
                         <button className={responseTab === 'headers' ? 'active' : ''} onClick={() => setResponseTab('headers')}>Headers</button>
                         <button className={responseTab === 'body' ? 'active' : ''} onClick={() => setResponseTab('body')}>Body</button>
+                        <button className={responseTab === 'diff' ? 'active' : ''} onClick={() => setResponseTab('diff')}>Diff</button>
                         <button className={responseTab === 'metrics' ? 'active' : ''} onClick={() => setResponseTab('metrics')}>Metrics</button>
                         <strong>{testResult ? `${testResult.status}` : '-'}</strong>
                       </div>
@@ -1132,6 +1516,14 @@ export default function App(): JSX.Element {
                               value={testResult.body || '(empty response body)'}
                               base64={testResult.bodyBase64}
                               contentType={testResult.headers['content-type']}
+                            />
+                          )}
+                          {responseTab === 'diff' && (
+                            <JsonDiffViewer
+                              before={selectedSavedApi.exchange.responseBody}
+                              after={testResult.body}
+                              beforeBase64={selectedSavedApi.exchange.responseBodyBase64}
+                              afterBase64={testResult.bodyBase64}
                             />
                           )}
                           {responseTab === 'metrics' && <MetricsPanel result={testResult} />}
@@ -1181,6 +1573,43 @@ export default function App(): JSX.Element {
             >
               URLをコピー
             </button>
+          </div>
+        </div>
+      )}
+
+      {captureTabContextMenu && (
+        <div className="context-menu-backdrop" onMouseDown={() => setCaptureTabContextMenu(undefined)}>
+          <div
+            className="capture-context-menu"
+            style={{ left: captureTabContextMenu.x, top: captureTabContextMenu.y }}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              onClick={() => {
+                duplicateCaptureTab(captureTabContextMenu.tab)
+                setCaptureTabContextMenu(undefined)
+              }}
+            >
+              複製
+            </button>
+            <button
+              onClick={() => {
+                openRenameCaptureTab(captureTabContextMenu.tab)
+                setCaptureTabContextMenu(undefined)
+              }}
+            >
+              名前変更
+            </button>
+            {captureTabContextMenu.tab.id !== 'live' && (
+              <button
+                onClick={() => {
+                  closeCaptureTab(captureTabContextMenu.tab.id)
+                  setCaptureTabContextMenu(undefined)
+                }}
+              >
+                閉じる
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1356,6 +1785,34 @@ export default function App(): JSX.Element {
         </section>
       )}
 
+      {renameCaptureTabTarget && (
+        <div className="modal-backdrop" onMouseDown={() => setRenameCaptureTabTarget(undefined)}>
+          <section className="save-dialog rename-tab-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-tab-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="save-dialog-header">
+              <div>
+                <strong id="rename-tab-title">Rename Tab</strong>
+                <span>{renameCaptureTabTarget.title}</span>
+              </div>
+              <button title="Close" onClick={() => setRenameCaptureTabTarget(undefined)}><X size={16} /></button>
+            </div>
+            <div className="save-dialog-body">
+              <label>
+                <span>Name</span>
+                <input
+                  value={renameCaptureTabName}
+                  onChange={(event) => setRenameCaptureTabName(event.target.value)}
+                  autoFocus
+                />
+              </label>
+            </div>
+            <div className="save-dialog-actions">
+              <button onClick={() => setRenameCaptureTabTarget(undefined)}>Cancel</button>
+              <button className="primary-action" onClick={renameCaptureTab}>Rename</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {collectionSettingsTarget && (
         <div className="modal-backdrop" onMouseDown={() => setCollectionSettingsTarget(undefined)}>
           <section className="save-dialog collection-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="collection-settings-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -1522,6 +1979,15 @@ export default function App(): JSX.Element {
         <span>{status.error || message || `CA: ${status.caCertPath || 'not generated yet'} | Set external clients to HTTP/HTTPS proxy 127.0.0.1:8899.`}</span>
       </footer>
       </main>
+      {focusHint && (
+        <div
+          className="focus-hint"
+          role="tooltip"
+          style={{ left: focusHint.x, top: focusHint.y }}
+        >
+          {focusHint.text}
+        </div>
+      )}
     </div>
   )
 }
@@ -1763,6 +2229,50 @@ function MetricsPanel({ result }: { result: ReplayResult }): JSX.Element {
   )
 }
 
+function CaptureTabIcon({ kind }: { kind: CaptureTabKind }): JSX.Element {
+  if (kind === 'snapshot') return <Clock3 size={15} />
+  if (kind === 'har') return <FileDown size={15} />
+  return <RadioTower size={15} />
+}
+
+function JsonDiffViewer({
+  before,
+  after,
+  beforeBase64,
+  afterBase64
+}: {
+  before: string
+  after: string
+  beforeBase64?: string
+  afterBase64?: string
+}): JSX.Element {
+  const diff = useMemo(() => buildJsonDiff(before, after, Boolean(beforeBase64 || afterBase64)), [after, afterBase64, before, beforeBase64])
+
+  if (!diff.ok) {
+    return <div className="empty-state compact">{diff.message}</div>
+  }
+
+  return (
+    <div className="json-diff-viewer">
+      <div className="json-diff-summary">
+        <span>Saved response</span>
+        <strong>{diff.changed ? `${diff.added} added / ${diff.removed} removed` : 'No JSON changes'}</strong>
+        <span>Latest response</span>
+      </div>
+      <pre className="json-diff-code" aria-label="JSON diff">
+        <code>
+          {diff.lines.map((line, index) => (
+            <span key={`${line.type}-${index}`} className={`json-diff-line ${line.type}`}>
+              <span className="json-diff-sign">{line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' '}</span>
+              <span>{line.value || ' '}</span>
+            </span>
+          ))}
+        </code>
+      </pre>
+    </div>
+  )
+}
+
 function BodyViewer({
   value,
   base64,
@@ -1775,7 +2285,8 @@ function BodyViewer({
   searchQuery?: string
 }): JSX.Element {
   if (base64) return <BinaryViewer base64={base64} contentType={contentType} fallbackLabel={value} searchQuery={searchQuery} />
-  return <CodeBlock value={value} language={languageFromBody(value, contentType)} searchQuery={searchQuery} />
+  const formattedValue = formatBodyForDisplay(value, contentType)
+  return <CodeBlock value={formattedValue} language={languageFromBody(formattedValue, contentType)} searchQuery={searchQuery} />
 }
 
 function BinaryViewer({
@@ -1964,6 +2475,18 @@ function languageFromBody(value: string, contentType?: string | string[]): CodeL
   return 'plaintext'
 }
 
+function formatBodyForDisplay(value: string, contentType?: string | string[]): string {
+  const normalizedContentType = Array.isArray(contentType) ? contentType.join(';').toLowerCase() : (contentType || '').toLowerCase()
+  const trimmed = value.trim()
+  if (!trimmed || (!normalizedContentType.includes('json') && !looksLikeJson(trimmed))) return value
+
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2)
+  } catch {
+    return value
+  }
+}
+
 function looksLikeJson(value: string): boolean {
   if (!value || !((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']')))) return false
   try {
@@ -1972,6 +2495,93 @@ function looksLikeJson(value: string): boolean {
   } catch {
     return false
   }
+}
+
+type JsonDiffLine = { type: 'same' | 'added' | 'removed'; value: string }
+type JsonDiffResult =
+  | { ok: true; changed: boolean; added: number; removed: number; lines: JsonDiffLine[] }
+  | { ok: false; message: string }
+
+function buildJsonDiff(before: string, after: string, hasBinaryBody: boolean): JsonDiffResult {
+  if (hasBinaryBody) return { ok: false, message: 'Binary responses cannot be compared as JSON.' }
+
+  const beforeJson = parseJsonForDiff(before)
+  const afterJson = parseJsonForDiff(after)
+  if (!beforeJson.ok || !afterJson.ok) {
+    return { ok: false, message: 'Both saved and latest responses must be valid JSON to show a diff.' }
+  }
+
+  const beforeLines = JSON.stringify(sortJsonValue(beforeJson.value), null, 2).split('\n')
+  const afterLines = JSON.stringify(sortJsonValue(afterJson.value), null, 2).split('\n')
+  const lines = diffLines(beforeLines, afterLines)
+  const added = lines.filter((line) => line.type === 'added').length
+  const removed = lines.filter((line) => line.type === 'removed').length
+
+  return {
+    ok: true,
+    changed: added + removed > 0,
+    added,
+    removed,
+    lines
+  }
+}
+
+function parseJsonForDiff(value: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(value) }
+  } catch {
+    return { ok: false }
+  }
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonValue)
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, sortJsonValue(entry)])
+  )
+}
+
+function diffLines(beforeLines: string[], afterLines: string[]): JsonDiffLine[] {
+  const lengths: number[][] = Array.from({ length: beforeLines.length + 1 }, () => Array(afterLines.length + 1).fill(0))
+
+  for (let beforeIndex = beforeLines.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
+    for (let afterIndex = afterLines.length - 1; afterIndex >= 0; afterIndex -= 1) {
+      lengths[beforeIndex][afterIndex] = beforeLines[beforeIndex] === afterLines[afterIndex]
+        ? lengths[beforeIndex + 1][afterIndex + 1] + 1
+        : Math.max(lengths[beforeIndex + 1][afterIndex], lengths[beforeIndex][afterIndex + 1])
+    }
+  }
+
+  const lines: JsonDiffLine[] = []
+  let beforeIndex = 0
+  let afterIndex = 0
+  while (beforeIndex < beforeLines.length && afterIndex < afterLines.length) {
+    if (beforeLines[beforeIndex] === afterLines[afterIndex]) {
+      lines.push({ type: 'same', value: beforeLines[beforeIndex] })
+      beforeIndex += 1
+      afterIndex += 1
+    } else if (lengths[beforeIndex + 1][afterIndex] >= lengths[beforeIndex][afterIndex + 1]) {
+      lines.push({ type: 'removed', value: beforeLines[beforeIndex] })
+      beforeIndex += 1
+    } else {
+      lines.push({ type: 'added', value: afterLines[afterIndex] })
+      afterIndex += 1
+    }
+  }
+
+  while (beforeIndex < beforeLines.length) {
+    lines.push({ type: 'removed', value: beforeLines[beforeIndex] })
+    beforeIndex += 1
+  }
+  while (afterIndex < afterLines.length) {
+    lines.push({ type: 'added', value: afterLines[afterIndex] })
+    afterIndex += 1
+  }
+
+  return lines
 }
 
 function escapeHtml(value: string): string {
@@ -2235,6 +2845,15 @@ function domainFromCapture(capture: CapturedExchange): string {
   }
 }
 
+function faviconUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(parsed.hostname)}&sz=32`
+  } catch {
+    return 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+  }
+}
+
 function classifyResource(capture: CapturedExchange): Exclude<ResourceFilter, 'all'> {
   const responseType = headerValueToString(capture.responseHeaders['content-type']).toLowerCase()
   const requestAccept = headerValueToString(capture.requestHeaders.accept).toLowerCase()
@@ -2255,10 +2874,11 @@ function classifyResource(capture: CapturedExchange): Exclude<ResourceFilter, 'a
   return 'other'
 }
 
-function captureMatchesQuery(capture: CapturedExchange, needle: string): boolean {
-  return [
+function captureMatchesQuery(capture: CapturedExchange, tokens: string[]): boolean {
+  const haystack = [
     capture.method,
     capture.url,
+    normalizeUrlForSearch(capture.url),
     capture.host,
     capture.path,
     capture.responseStatusCode,
@@ -2269,7 +2889,52 @@ function captureMatchesQuery(capture: CapturedExchange, needle: string): boolean
     capture.responseBody,
     capture.startedAt,
     capture.tags?.join(' ')
-  ].join('\n').toLowerCase().includes(needle)
+  ].join('\n').toLowerCase()
+  return tokens.every((token) => haystack.includes(token))
+}
+
+function searchTokens(value: string): string[] {
+  return normalizeSearchText(value)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function normalizeSearchText(value: string): string {
+  return [value, decodeUriSafe(value), stripUrlProtocol(value), stripUrlProtocol(decodeUriSafe(value))]
+    .join(' ')
+    .toLowerCase()
+}
+
+function normalizeUrlForSearch(url: string): string {
+  try {
+    const parsed = new URL(url)
+    const decodedUrl = decodeUriSafe(url)
+    const path = `${parsed.pathname}${parsed.search}${parsed.hash}`
+    return [
+      url,
+      decodedUrl,
+      stripUrlProtocol(url),
+      parsed.hostname,
+      parsed.host,
+      path,
+      decodeUriSafe(path)
+    ].join('\n')
+  } catch {
+    return [url, decodeUriSafe(url), stripUrlProtocol(url)].join('\n')
+  }
+}
+
+function stripUrlProtocol(value: string): string {
+  return value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+}
+
+function decodeUriSafe(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {

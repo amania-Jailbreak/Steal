@@ -64,6 +64,10 @@ export class ProxyService extends EventEmitter {
     this.captures = []
   }
 
+  appendCaptures(captures: CapturedExchange[]): void {
+    this.captures.push(...captures)
+  }
+
   setCapturePaused(paused: boolean): ProxyStatus {
     this.capturePaused = paused
     this.status = { ...this.status, capturePaused: paused }

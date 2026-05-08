@@ -102,6 +102,28 @@ textarea {
   font: inherit;
 }
 
+input,
+select,
+textarea {
+  color: var(--theme-text);
+  background: var(--theme-surface);
+  border-color: var(--theme-border);
+  caret-color: var(--theme-primary);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: color-mix(in srgb, var(--theme-text-muted) 74%, transparent);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: -1px;
+  border-color: var(--theme-primary);
+}
+
 button {
   border: 1px solid var(--theme-border);
   background: var(--theme-surface);
@@ -868,11 +890,16 @@ button:hover {
   border-radius: 7px 7px 0 0;
   background: var(--theme-surface-subtle);
   cursor: pointer;
+  user-select: none;
 }
 
 .api-tab.active {
   background: var(--theme-surface);
   color: var(--theme-text-strong);
+}
+
+.api-tab.dragging {
+  opacity: 0.55;
 }
 
 .api-tab strong {
@@ -1006,6 +1033,72 @@ button:hover {
 
 .response-tabs {
   gap: 22px;
+}
+
+.json-diff-viewer {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--theme-code-background);
+  color: var(--theme-code-text);
+  overflow: hidden;
+}
+
+.json-diff-summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--theme-code-text) 18%, transparent);
+  font-size: 12px;
+}
+
+.json-diff-summary span {
+  color: color-mix(in srgb, var(--theme-code-text) 68%, transparent);
+}
+
+.json-diff-summary strong {
+  margin-right: auto;
+  color: var(--theme-code-text);
+}
+
+.json-diff-code {
+  margin: 0;
+  padding: 8px 0;
+  overflow: auto;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.json-diff-code code {
+  display: block;
+  min-width: max-content;
+}
+
+.json-diff-line {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-height: 20px;
+  padding-right: 12px;
+  white-space: pre;
+}
+
+.json-diff-line.added {
+  color: var(--theme-success);
+  background: color-mix(in srgb, var(--theme-success) 16%, transparent);
+}
+
+.json-diff-line.removed {
+  color: var(--theme-danger);
+  background: color-mix(in srgb, var(--theme-danger) 14%, transparent);
+}
+
+.json-diff-sign {
+  text-align: center;
+  user-select: none;
+  opacity: 0.82;
 }
 
 .kv-editor {
@@ -1315,9 +1408,99 @@ button:hover {
 .network-panel {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   border-top: 1px solid var(--theme-border);
   background: var(--theme-surface);
+}
+
+.capture-tab-bar {
+  min-height: 36px;
+  display: flex;
+  align-items: end;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--theme-border);
+  background: var(--theme-surface-subtle);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.capture-tab-bar > button {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 1px;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  background: var(--theme-surface);
+  color: var(--theme-text-muted);
+}
+
+.capture-tab {
+  min-width: 120px;
+  max-width: 210px;
+  height: 31px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0 5px 0 9px;
+  border: 1px solid var(--theme-border);
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  background: var(--theme-surface-subtle);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.capture-tab-icon {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  color: var(--theme-text-muted);
+}
+
+.capture-tab.active .capture-tab-icon {
+  color: var(--theme-primary);
+}
+
+.capture-tab.active {
+  background: var(--theme-surface);
+  color: var(--theme-text-strong);
+}
+
+.capture-tab.dragging {
+  opacity: 0.55;
+}
+
+.capture-tab strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.capture-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--theme-primary);
+}
+
+.capture-tab-close {
+  width: 21px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--theme-text-muted);
+}
+
+.capture-tab-close:hover {
+  background: var(--theme-surface-hover);
+  color: var(--theme-text);
 }
 
 .browser-toggle,
@@ -1504,19 +1687,38 @@ button:hover {
 
 .capture-table {
   min-height: 0;
+  position: relative;
   overflow: auto;
+}
+
+.capture-table-spacer {
+  position: relative;
+  min-height: 100%;
+}
+
+.capture-rows-virtual {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
 }
 
 .capture-row {
   display: grid;
-  grid-template-columns: 56px minmax(160px, 1fr) 52px 58px 62px;
+  grid-template-columns: 56px 18px minmax(160px, 1fr) 52px 58px 62px;
   gap: 6px;
-  min-height: 28px;
+  height: 29px;
   padding: 0 8px;
   align-items: center;
   font-size: 11px;
   border-radius: 0;
   border-bottom: 1px solid var(--theme-border);
+}
+
+.capture-favicon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
 }
 
 .url-cell {
@@ -2087,6 +2289,7 @@ mark {
   border-radius: 6px;
   padding: 0 9px;
   color: var(--theme-text);
+  background: var(--theme-surface);
 }
 
 .collection-settings-layout {
@@ -2238,6 +2441,10 @@ mark {
   border-bottom: 0;
 }
 
+.rename-tab-dialog {
+  max-width: 420px;
+}
+
 .empty-state {
   margin: auto;
   padding: 24px;
@@ -2263,6 +2470,24 @@ mark {
   background: var(--theme-surface);
   font-size: 12px;
   color: var(--theme-text-muted);
+}
+
+.focus-hint {
+  position: fixed;
+  z-index: 10000;
+  max-width: 260px;
+  padding: 6px 8px;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--theme-code-background) 92%, var(--theme-surface));
+  color: var(--theme-code-text);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.22);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  pointer-events: none;
+  transform: translateX(-50%);
+  white-space: normal;
 }
 
 @media (max-width: 1180px) {

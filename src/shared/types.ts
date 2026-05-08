@@ -142,6 +142,8 @@ export interface AppApi {
   disableSystemProxy: () => Promise<void>
   clearCaptures: () => Promise<void>
   getCaptures: () => Promise<CapturedExchange[]>
+  exportHar: (captures: CapturedExchange[]) => Promise<string | undefined>
+  importHar: () => Promise<CapturedExchange[]>
   saveApi: (exchangeId: string, name: string, tags: string[], collectionName: string) => Promise<SavedApi>
   listCollections: () => Promise<SavedCollection[]>
   updateCollectionSettings: (collectionId: string, settings: CollectionSettings) => Promise<SavedCollection[]>

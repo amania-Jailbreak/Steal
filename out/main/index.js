@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, ipcMain, shell, dialog, Tray, Menu, nativeImage } from "electron";
+import { app, BrowserWindow, session, ipcMain, shell, clipboard, dialog, Tray, Menu, nativeImage } from "electron";
 import { execFile } from "node:child_process";
 import { join, dirname } from "node:path";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
@@ -14,8 +14,8 @@ const __dirname = import.meta.dirname;
 const require2 = __cjs_mod__.createRequire(import.meta.url);
 function decodeBody(buffer, headers) {
   if (buffer.byteLength === 0) return { text: "" };
-  const contentType = headerToString$1(headers["content-type"]).toLowerCase();
-  const contentEncoding = headerToString$1(headers["content-encoding"]).toLowerCase();
+  const contentType = headerToString$2(headers["content-type"]).toLowerCase();
+  const contentEncoding = headerToString$2(headers["content-encoding"]).toLowerCase();
   const decoded = decodeContentEncoding(buffer, contentEncoding);
   if (contentType && !isTextLikeContent(contentType) || !contentType && looksBinary(decoded)) {
     return {
@@ -88,7 +88,7 @@ function extractCharset(contentType) {
   if (charset === "jis" || charset === "iso2022jp") return "iso-2022-jp";
   return charset;
 }
-function headerToString$1(value) {
+function headerToString$2(value) {
   return Array.isArray(value) ? value[0] || "" : value || "";
 }
 const execFileAsync$1 = promisify(execFile);
@@ -174,6 +174,9 @@ class ProxyService extends EventEmitter {
   clearCaptures() {
     this.captures = [];
   }
+  appendCaptures(captures) {
+    this.captures.push(...captures);
+  }
   setCapturePaused(paused) {
     this.capturePaused = paused;
     this.status = { ...this.status, capturePaused: paused };
@@ -199,11 +202,11 @@ class ProxyService extends EventEmitter {
       const requestChunks = [];
       const responseChunks = [];
       const request = ctx.clientToProxyRequest;
-      const host = headerToString(request.headers.host);
+      const host = headerToString$1(request.headers.host);
       const protocol = ctx.isSSL ? "https" : "http";
       const path = request.url || "/";
       const url = path.startsWith("http://") || path.startsWith("https://") ? path : `${protocol}://${host}${path}`;
-      const source = headerToString(request.headers[browserSourceHeader]) === "browser" ? "browser" : "proxy";
+      const source = headerToString$1(request.headers[browserSourceHeader]) === "browser" ? "browser" : "proxy";
       const clientPort = request.socket.remotePort || 0;
       const sourceAppLookup = source === "browser" ? Promise.resolve({ name: "Browser", pid: void 0 }) : findClientProcess(clientPort, this.port);
       delete request.headers[browserSourceHeader];
@@ -306,7 +309,7 @@ class ProxyService extends EventEmitter {
 function normalizeHeaders(headers) {
   return Object.fromEntries(Object.entries(headers || {}).map(([key, value]) => [key.toLowerCase(), value]));
 }
-function headerToString(value) {
+function headerToString$1(value) {
   return Array.isArray(value) ? value[0] || "" : value || "";
 }
 function suppressNoisyProxyLogs(proxy) {
@@ -835,6 +838,162 @@ function normalizeTheme(value) {
 function normalizeColor(value, fallback) {
   return typeof value === "string" && colorPattern.test(value.trim()) ? value.trim() : fallback;
 }
+function capturesToHar(captures) {
+  return {
+    log: {
+      version: "1.2",
+      creator: {
+        name: "Steal",
+        version: "0.1.0"
+      },
+      entries: captures.slice().reverse().map(captureToHarEntry)
+    }
+  };
+}
+function capturesFromHar(value) {
+  const entries = readHarEntries(value);
+  return entries.map(harEntryToCapture);
+}
+function captureToHarEntry(capture) {
+  const requestMimeType = headerToString(capture.requestHeaders["content-type"]);
+  const responseMimeType = headerToString(capture.responseHeaders["content-type"]);
+  return {
+    startedDateTime: capture.startedAt,
+    time: capture.durationMs,
+    request: {
+      method: capture.method,
+      url: capture.url,
+      httpVersion: "HTTP/1.1",
+      cookies: [],
+      headers: headersToHar(capture.requestHeaders),
+      queryString: queryToHar(capture.url),
+      postData: bodyToHarPostData(capture.requestBody, capture.requestBodyBase64, requestMimeType),
+      headersSize: -1,
+      bodySize: capture.requestSize
+    },
+    response: {
+      status: capture.responseStatusCode,
+      statusText: capture.responseStatusMessage,
+      httpVersion: "HTTP/1.1",
+      cookies: [],
+      headers: headersToHar(capture.responseHeaders),
+      content: bodyToHarContent(capture.responseBody, capture.responseBodyBase64, responseMimeType, capture.responseSize),
+      redirectURL: headerToString(capture.responseHeaders.location),
+      headersSize: -1,
+      bodySize: capture.responseSize
+    },
+    cache: {},
+    timings: {
+      send: 0,
+      wait: capture.durationMs,
+      receive: 0
+    }
+  };
+}
+function harEntryToCapture(entry) {
+  const requestHeaders = harHeadersToMap(entry.request?.headers);
+  const responseHeaders = harHeadersToMap(entry.response?.headers);
+  const url = entry.request?.url || "http://unknown.local/";
+  const parsedUrl = safeUrl(url);
+  const requestBody = harBodyToCaptureBody(entry.request?.postData?.text, entry.request?.postData?.encoding, entry.request?.postData?.mimeType);
+  const responseBody = harBodyToCaptureBody(entry.response?.content?.text, entry.response?.content?.encoding, entry.response?.content?.mimeType);
+  return {
+    id: crypto.randomUUID(),
+    method: entry.request?.method || "GET",
+    url,
+    protocol: parsedUrl.protocol === "https:" ? "https" : "http",
+    host: parsedUrl.host,
+    path: `${parsedUrl.pathname}${parsedUrl.search}`,
+    source: "proxy",
+    startedAt: entry.startedDateTime || (/* @__PURE__ */ new Date()).toISOString(),
+    durationMs: Number.isFinite(entry.time) ? Math.max(0, entry.time) : 0,
+    requestHeaders,
+    requestBody: requestBody.text,
+    requestBodyBase64: requestBody.base64,
+    requestSize: entry.request?.bodySize && entry.request.bodySize > 0 ? entry.request.bodySize : byteLength(requestBody),
+    responseStatusCode: entry.response?.status || 0,
+    responseStatusMessage: entry.response?.statusText || "",
+    responseHeaders,
+    responseBody: responseBody.text,
+    responseBodyBase64: responseBody.base64,
+    responseSize: entry.response?.bodySize && entry.response.bodySize > 0 ? entry.response.bodySize : byteLength(responseBody)
+  };
+}
+function readHarEntries(value) {
+  if (!value || typeof value !== "object") throw new Error("Invalid HAR file.");
+  const root = value;
+  if (!Array.isArray(root.log?.entries)) throw new Error("HAR log.entries was not found.");
+  return root.log.entries;
+}
+function bodyToHarPostData(text, base64, mimeType) {
+  if (!text && !base64) return void 0;
+  return {
+    mimeType: mimeType || "application/octet-stream",
+    text: base64 || text,
+    encoding: base64 ? "base64" : void 0
+  };
+}
+function bodyToHarContent(text, base64, mimeType, size) {
+  return {
+    size,
+    mimeType: mimeType || "application/octet-stream",
+    text: base64 || text,
+    encoding: base64 ? "base64" : void 0
+  };
+}
+function harBodyToCaptureBody(text, encoding, mimeType) {
+  if (!text) return { text: "" };
+  if (encoding !== "base64") return { text };
+  const buffer = Buffer.from(text, "base64");
+  if (isTextMime(mimeType || "")) return { text: buffer.toString("utf8") };
+  return {
+    text: `[binary body: ${buffer.byteLength} bytes]`,
+    base64: text
+  };
+}
+function byteLength(body) {
+  if (body.base64) return Buffer.from(body.base64, "base64").byteLength;
+  return Buffer.byteLength(body.text);
+}
+function headersToHar(headers) {
+  return Object.entries(headers || {}).flatMap(([name, value]) => {
+    if (Array.isArray(value)) return value.map((item) => ({ name, value: item }));
+    if (value === void 0) return [];
+    return [{ name, value }];
+  });
+}
+function harHeadersToMap(headers) {
+  const output = {};
+  for (const header of headers || []) {
+    if (!header?.name) continue;
+    const key = header.name.toLowerCase();
+    if (output[key] === void 0) {
+      output[key] = String(header.value ?? "");
+    } else if (Array.isArray(output[key])) {
+      output[key].push(String(header.value ?? ""));
+    } else {
+      output[key] = [String(output[key]), String(header.value ?? "")];
+    }
+  }
+  return output;
+}
+function queryToHar(url) {
+  return Array.from(safeUrl(url).searchParams.entries()).map(([name, value]) => ({ name, value }));
+}
+function safeUrl(url) {
+  try {
+    return new URL(url);
+  } catch {
+    return new URL("http://unknown.local/");
+  }
+}
+function headerToString(value) {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+function isTextMime(mimeType) {
+  const normalized = mimeType.toLowerCase();
+  return normalized.startsWith("text/") || normalized.includes("json") || normalized.includes("xml") || normalized.includes("javascript") || normalized.includes("x-www-form-urlencoded");
+}
 const execFileAsync = promisify(execFile);
 const defaultExecOptions = { encoding: "utf8", timeout: 8e3 };
 const windowsInternetSettingsKey = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
@@ -1245,6 +1404,9 @@ function registerIpc() {
     await setThemeHotReload(enabled);
     return themeHotReloadEnabled;
   });
+  ipcMain.handle("clipboard:write-text", (_event, text) => {
+    clipboard.writeText(text);
+  });
   ipcMain.handle("proxy:status", () => proxyService.getStatus());
   ipcMain.handle("proxy:start", () => startProxyWithSystemSetup());
   ipcMain.handle("proxy:stop", () => stopProxyWithSystemRestore());
@@ -1260,6 +1422,28 @@ function registerIpc() {
   ipcMain.handle("captures:pause", (_event, paused) => proxyService.setCapturePaused(paused));
   ipcMain.handle("captures:clear", () => {
     proxyService.clearCaptures();
+  });
+  ipcMain.handle("captures:export-har", async (_event, captures) => {
+    const exportCaptures = Array.isArray(captures) ? captures : proxyService.getCaptures();
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: "Export captures as HAR",
+      defaultPath: "steal-captures.har",
+      filters: [{ name: "HAR", extensions: ["har", "json"] }]
+    });
+    if (canceled || !filePath) return void 0;
+    await writeFile(filePath, JSON.stringify(capturesToHar(exportCaptures), null, 2));
+    return filePath;
+  });
+  ipcMain.handle("captures:import-har", async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: "Import HAR",
+      properties: ["openFile"],
+      filters: [{ name: "HAR", extensions: ["har", "json"] }]
+    });
+    if (canceled || filePaths.length === 0) return [];
+    const raw = await readFile(filePaths[0], "utf8");
+    const captures = capturesFromHar(JSON.parse(raw));
+    return captures;
   });
   ipcMain.handle("saved:list", () => savedApiStore.list());
   ipcMain.handle("collections:list", () => savedApiStore.listCollections());
