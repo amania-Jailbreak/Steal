@@ -21,6 +21,20 @@ const api = {
   openCertificateFolder: () => electron.ipcRenderer.invoke("cert:open-folder"),
   getCertificateStatus: () => electron.ipcRenderer.invoke("cert:status"),
   installCertificate: () => electron.ipcRenderer.invoke("cert:install"),
+  getTheme: () => electron.ipcRenderer.invoke("theme:get"),
+  listThemePresets: () => electron.ipcRenderer.invoke("theme:presets"),
+  updateTheme: (theme) => electron.ipcRenderer.invoke("theme:update", theme),
+  resetTheme: () => electron.ipcRenderer.invoke("theme:reset"),
+  openThemeFile: () => electron.ipcRenderer.invoke("theme:open-file"),
+  chooseThemeImage: () => electron.ipcRenderer.invoke("theme:choose-image"),
+  getThemeImageDataUrl: (imagePath) => electron.ipcRenderer.invoke("theme:image-data-url", imagePath),
+  applyThemeBackground: (background) => electron.ipcRenderer.invoke("theme:background", background),
+  getThemeHotReload: () => electron.ipcRenderer.invoke("theme:hot-reload:get"),
+  setThemeHotReload: (enabled) => electron.ipcRenderer.invoke("theme:hot-reload:set", enabled),
+  getAppPlatform: () => electron.ipcRenderer.invoke("app:platform"),
+  minimizeWindow: () => electron.ipcRenderer.invoke("window:minimize"),
+  toggleMaximizeWindow: () => electron.ipcRenderer.invoke("window:toggle-maximize"),
+  closeWindow: () => electron.ipcRenderer.invoke("window:close"),
   onCapture: (callback) => {
     const listener = (_event, exchange) => callback(exchange);
     electron.ipcRenderer.on("captures:new", listener);
@@ -30,6 +44,11 @@ const api = {
     const listener = (_event, status) => callback(status);
     electron.ipcRenderer.on("proxy:changed", listener);
     return () => electron.ipcRenderer.removeListener("proxy:changed", listener);
+  },
+  onThemeChanged: (callback) => {
+    const listener = (_event, theme) => callback(theme);
+    electron.ipcRenderer.on("theme:changed", listener);
+    return () => electron.ipcRenderer.removeListener("theme:changed", listener);
   }
 };
 electron.contextBridge.exposeInMainWorld("steal", api);

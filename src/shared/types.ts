@@ -74,6 +74,47 @@ export interface ReplayResult {
 }
 
 export type BrowserMode = 'embedded' | 'chrome'
+export type AppPlatform = NodeJS.Platform
+export type ThemeBackgroundMode = 'solid' | 'transparent' | 'image'
+
+export interface AppTheme {
+  name: string
+  colors: {
+    text: string
+    textStrong: string
+    textMuted: string
+    appBackground: string
+    surface: string
+    surfaceSubtle: string
+    surfaceHover: string
+    border: string
+    borderStrong: string
+    primary: string
+    primaryHover: string
+    primarySoft: string
+    primaryBorder: string
+    success: string
+    successSoft: string
+    warning: string
+    warningSoft: string
+    danger: string
+    dangerSoft: string
+    codeBackground: string
+    codeText: string
+    overlay: string
+  }
+  methods: Record<string, {
+    text: string
+    background: string
+  }>
+  background: {
+    mode: ThemeBackgroundMode
+    opacity: number
+    imagePath: string
+    imageOpacity: number
+    imageBrightness: number
+  }
+}
 
 export interface AppSettings {
   autoStartProxy: boolean
@@ -103,6 +144,21 @@ export interface AppApi {
   openCertificateFolder: () => Promise<void>
   getCertificateStatus: () => Promise<CertificateStatus>
   installCertificate: () => Promise<CertificateStatus>
+  getTheme: () => Promise<AppTheme>
+  listThemePresets: () => Promise<AppTheme[]>
+  updateTheme: (theme: AppTheme) => Promise<AppTheme>
+  resetTheme: () => Promise<AppTheme>
+  openThemeFile: () => Promise<void>
+  chooseThemeImage: () => Promise<string | undefined>
+  getThemeImageDataUrl: (imagePath: string) => Promise<string | undefined>
+  applyThemeBackground: (background: AppTheme['background']) => Promise<void>
+  getThemeHotReload: () => Promise<boolean>
+  setThemeHotReload: (enabled: boolean) => Promise<boolean>
+  getAppPlatform: () => Promise<AppPlatform>
+  minimizeWindow: () => Promise<void>
+  toggleMaximizeWindow: () => Promise<boolean>
+  closeWindow: () => Promise<void>
   onCapture: (callback: (exchange: CapturedExchange) => void) => () => void
   onProxyStatus: (callback: (status: ProxyStatus) => void) => () => void
+  onThemeChanged: (callback: (theme: AppTheme) => void) => () => void
 }

@@ -1,24 +1,29 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, session, Tray } from 'electron'
 import { execFile } from 'node:child_process'
-import { join } from 'node:path'
+import { extname, join } from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, watch, type FSWatcher } from 'node:fs'
 import { ProxyService } from './proxy-service'
 import { SettingsStore } from './settings-store'
 import { SavedApiStore } from './storage'
+import { ThemeStore } from './theme-store'
 import { disableStealSystemProxy, enableSystemProxy, installTrustedCertificate, isCertificateTrusted, restoreSystemProxy } from './system-proxy'
 import { decodeBodyText } from './body-decode'
-import type { CertificateStatus, ProxyStatus, ReplayRequest, ReplayResult, SavedApi } from '../shared/types'
+import type { AppTheme, CertificateStatus, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, ThemeBackgroundMode } from '../shared/types'
 
 let mainWindow: BrowserWindow | undefined
 let proxyService: ProxyService
 let savedApiStore: SavedApiStore
 let settingsStore: SettingsStore
+let themeStore: ThemeStore
 let certificatePromptInFlight = false
 let tray: Tray | undefined
 let trayProxyTransitioning = false
 let quitCleanupStarted = false
 let quitCleanupComplete = false
+let themeHotReloadEnabled = false
+let themeWatcher: FSWatcher | undefined
+let themeReloadTimer: NodeJS.Timeout | undefined
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
 
@@ -29,7 +34,11 @@ function createWindow(): void {
     minWidth: 1120,
     minHeight: 720,
     title: 'Steal',
-    backgroundColor: '#f7f8fb',
+    backgroundColor: '#00000000',
+    transparent: true,
+    frame: process.platform === 'darwin' ? undefined : false,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
+    trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 13 } : undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
@@ -55,6 +64,8 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = undefined
   })
+
+  void themeStore?.get().then((theme) => applyNativeBackgroundMode(theme.background.mode))
 }
 
 app.whenReady().then(async () => {
@@ -63,6 +74,7 @@ app.whenReady().then(async () => {
   proxyService = new ProxyService(dataDir)
   savedApiStore = new SavedApiStore(join(dataDir, 'collections'))
   settingsStore = new SettingsStore(join(dataDir, 'settings.json'))
+  themeStore = new ThemeStore(join(dataDir, 'theme.json'))
   const settings = await settingsStore.get()
 
   registerIpc()
@@ -130,6 +142,35 @@ function wireProxyEvents(): void {
 function registerIpc(): void {
   ipcMain.handle('settings:get', () => settingsStore.get())
   ipcMain.handle('settings:update', (_event, patch) => settingsStore.update(patch))
+  ipcMain.handle('theme:get', () => themeStore.get())
+  ipcMain.handle('theme:presets', () => themeStore.presets())
+  ipcMain.handle('theme:update', (_event, theme: AppTheme) => themeStore.update(theme))
+  ipcMain.handle('theme:reset', () => themeStore.reset())
+  ipcMain.handle('theme:open-file', async () => {
+    await themeStore.get()
+    await shell.openPath(themeStore.path)
+  })
+  ipcMain.handle('theme:choose-image', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose background image',
+      properties: ['openFile'],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }]
+    })
+    return canceled ? undefined : filePaths[0]
+  })
+  ipcMain.handle('theme:image-data-url', async (_event, imagePath: string) => {
+    if (!imagePath || !existsSync(imagePath)) return undefined
+    const data = await readFile(imagePath)
+    return `data:${mimeTypeForImage(imagePath)};base64,${data.toString('base64')}`
+  })
+  ipcMain.handle('theme:background', (_event, background: AppTheme['background']) => {
+    applyNativeBackground(background)
+  })
+  ipcMain.handle('theme:hot-reload:get', () => themeHotReloadEnabled)
+  ipcMain.handle('theme:hot-reload:set', async (_event, enabled: boolean) => {
+    await setThemeHotReload(enabled)
+    return themeHotReloadEnabled
+  })
   ipcMain.handle('proxy:status', () => proxyService.getStatus())
   ipcMain.handle('proxy:start', () => startProxyWithSystemSetup())
   ipcMain.handle('proxy:stop', () => stopProxyWithSystemRestore())
@@ -187,7 +228,70 @@ function registerIpc(): void {
     await installTrustedCertificate(status.caCertPath)
     return getCertificateStatus()
   })
+  ipcMain.handle('app:platform', () => process.platform)
+  ipcMain.handle('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
+  ipcMain.handle('window:toggle-maximize', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window) return false
+    if (window.isMaximized()) window.unmaximize()
+    else window.maximize()
+    return window.isMaximized()
+  })
+  ipcMain.handle('window:close', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.close()
+  })
   ipcMain.handle('browser:launch-chrome', (_event, url: string) => launchChromeBrowser(url))
+}
+
+function applyNativeBackgroundMode(mode: ThemeBackgroundMode): void {
+  applyNativeBackground({ mode, opacity: 1, imagePath: '', imageOpacity: 0.45, imageBrightness: 0.85 })
+}
+
+function applyNativeBackground(background: AppTheme['background']): void {
+  if (!mainWindow) return
+  if (process.platform === 'win32') {
+    mainWindow.setBackgroundMaterial('none')
+  } else if (process.platform === 'darwin') {
+    mainWindow.setVibrancy(null)
+  }
+}
+
+function mimeTypeForImage(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.webp':
+      return 'image/webp'
+    case '.gif':
+      return 'image/gif'
+    case '.bmp':
+      return 'image/bmp'
+    case '.png':
+    default:
+      return 'image/png'
+  }
+}
+
+async function setThemeHotReload(enabled: boolean): Promise<void> {
+  themeHotReloadEnabled = enabled
+  themeWatcher?.close()
+  themeWatcher = undefined
+  if (!enabled) return
+
+  await themeStore.get()
+  themeWatcher = watch(themeStore.path, { persistent: false }, () => {
+    if (themeReloadTimer) clearTimeout(themeReloadTimer)
+    themeReloadTimer = setTimeout(() => {
+      void themeStore.get().then((theme) => {
+        mainWindow?.webContents.send('theme:changed', theme)
+      }).catch((error: Error) => {
+        console.error('Failed to hot reload theme', error)
+      })
+    }, 120)
+  })
 }
 
 async function startProxyWithSystemSetup(): Promise<ProxyStatus> {

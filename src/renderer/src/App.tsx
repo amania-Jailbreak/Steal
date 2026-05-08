@@ -5,8 +5,8 @@ import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import xml from 'highlight.js/lib/languages/xml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
-import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Folder, FolderOpen, Funnel, Library, Monitor, Pause, Play, Plus, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
-import type { AppSettings, BrowserMode, CapturedExchange, CertificateStatus, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection } from '../../shared/types'
+import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Eye, EyeOff, Folder, FolderOpen, Funnel, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
+import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CapturedExchange, CertificateStatus, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection, ThemeBackgroundMode } from '../../shared/types'
 import './styles.css'
 
 type AppMode = 'capture' | 'collection' | 'settings'
@@ -15,7 +15,7 @@ type HeaderMode = 'table' | 'raw'
 type CodeLanguage = 'json' | 'javascript' | 'xml' | 'plaintext'
 type RequestEditorTab = 'query' | 'headers' | 'body'
 type ResponseViewerTab = 'headers' | 'body' | 'metrics'
-type SettingsCategory = 'startup' | 'browser'
+type SettingsCategory = 'startup' | 'browser' | 'theme'
 type ResourceFilter = 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
 type KeyValueRow = { id: string; key: string; value: string; enabled: boolean }
 type CaptureContextMenu = { capture: CapturedExchange; x: number; y: number }
@@ -65,6 +65,51 @@ const defaultAppSettings: AppSettings = {
   browserMode: 'embedded'
 }
 
+const emptyTheme: AppTheme = {
+  name: '',
+  colors: {
+    text: '',
+    textStrong: '',
+    textMuted: '',
+    appBackground: '',
+    surface: '',
+    surfaceSubtle: '',
+    surfaceHover: '',
+    border: '',
+    borderStrong: '',
+    primary: '',
+    primaryHover: '',
+    primarySoft: '',
+    primaryBorder: '',
+    success: '',
+    successSoft: '',
+    warning: '',
+    warningSoft: '',
+    danger: '',
+    dangerSoft: '',
+    codeBackground: '',
+    codeText: '',
+    overlay: ''
+  },
+  methods: {
+    default: { text: '', background: '' },
+    get: { text: '', background: '' },
+    post: { text: '', background: '' },
+    put: { text: '', background: '' },
+    patch: { text: '', background: '' },
+    delete: { text: '', background: '' },
+    head: { text: '', background: '' },
+    options: { text: '', background: '' }
+  },
+  background: {
+    mode: 'solid',
+    opacity: 1,
+    imagePath: '',
+    imageOpacity: 0.45,
+    imageBrightness: 0.85
+  }
+}
+
 export default function App(): JSX.Element {
   const webviewRef = useRef<Electron.WebviewTag | null>(null)
   const workspaceRef = useRef<HTMLElement | null>(null)
@@ -75,6 +120,8 @@ export default function App(): JSX.Element {
   const [networkHeight, setNetworkHeight] = useState(270)
   const [status, setStatus] = useState<ProxyStatus>(emptyStatus)
   const [certificateStatus, setCertificateStatus] = useState<CertificateStatus>(emptyCertificateStatus)
+  const [platform, setPlatform] = useState<AppPlatform>()
+  const [windowMaximized, setWindowMaximized] = useState(false)
   const [captures, setCaptures] = useState<CapturedExchange[]>([])
   const [collections, setCollections] = useState<SavedCollection[]>([])
   const [savedApis, setSavedApis] = useState<SavedApi[]>([])
@@ -97,6 +144,10 @@ export default function App(): JSX.Element {
   const [contextMenu, setContextMenu] = useState<CaptureContextMenu>()
   const [showBrowser, setShowBrowser] = useState(true)
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings)
+  const [theme, setTheme] = useState<AppTheme>(emptyTheme)
+  const [themePresets, setThemePresets] = useState<AppTheme[]>([])
+  const [themeSaving, setThemeSaving] = useState(false)
+  const [themeHotReload, setThemeHotReload] = useState(false)
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('startup')
   const [testRequest, setTestRequest] = useState<ReplayRequest>({ method: 'GET', url: '', headers: {}, body: '' })
   const [testQueryRows, setTestQueryRows] = useState<KeyValueRow[]>([])
@@ -115,6 +166,7 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     void refreshAll()
+    void window.steal.getAppPlatform().then(setPlatform)
     const removeCapture = window.steal.onCapture((capture) => {
       setCaptures((current) => [capture, ...current])
       setSelectedId((current) => current || capture.id)
@@ -134,6 +186,18 @@ export default function App(): JSX.Element {
       setSettings(nextSettings)
       setShowBrowser(nextSettings.autoShowBrowser)
     })
+    void window.steal.getTheme().then((nextTheme) => {
+      setTheme(nextTheme)
+      applyTheme(nextTheme)
+    })
+    void window.steal.listThemePresets().then(setThemePresets)
+    void window.steal.getThemeHotReload().then(setThemeHotReload)
+    const removeThemeChanged = window.steal.onThemeChanged((nextTheme) => {
+      setTheme(nextTheme)
+      applyTheme(nextTheme)
+      setMessage(`Theme hot reloaded: ${nextTheme.name}`)
+    })
+    return removeThemeChanged
   }, [])
 
   useEffect(() => {
@@ -298,6 +362,58 @@ export default function App(): JSX.Element {
     setMessage('Chrome launched with Steal proxy.')
   }
 
+  async function saveTheme(nextTheme: AppTheme): Promise<void> {
+    setThemeSaving(true)
+    try {
+      const savedTheme = await window.steal.updateTheme(nextTheme)
+      setTheme(savedTheme)
+      applyTheme(savedTheme)
+      setMessage(`Theme saved: ${savedTheme.name}`)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setThemeSaving(false)
+    }
+  }
+
+  async function updateThemeBackground(patch: Partial<AppTheme['background']>): Promise<void> {
+    await saveTheme({ ...theme, background: { ...theme.background, ...patch } })
+  }
+
+  async function selectBackgroundMode(mode: ThemeBackgroundMode): Promise<void> {
+    const patch: Partial<AppTheme['background']> = { mode }
+    if (mode === 'transparent') patch.opacity = 0
+    if (mode === 'solid' && theme.background.opacity < 1) patch.opacity = 1
+    await updateThemeBackground(patch)
+  }
+
+  async function chooseBackgroundImage(): Promise<void> {
+    const imagePath = await window.steal.chooseThemeImage()
+    if (!imagePath) return
+    await updateThemeBackground({ mode: 'image', imagePath })
+  }
+
+  async function resetTheme(): Promise<void> {
+    setThemeSaving(true)
+    setThemeError('')
+    try {
+      const nextTheme = await window.steal.resetTheme()
+      setTheme(nextTheme)
+      applyTheme(nextTheme)
+      setMessage('Theme reset.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setThemeSaving(false)
+    }
+  }
+
+  async function toggleThemeHotReload(checked: boolean): Promise<void> {
+    const enabled = await window.steal.setThemeHotReload(checked)
+    setThemeHotReload(enabled)
+    setMessage(enabled ? 'Theme hot reload enabled.' : 'Theme hot reload disabled.')
+  }
+
   async function installCertificate(): Promise<void> {
     setCertificateInstalling(true)
     setMessage('')
@@ -418,7 +534,38 @@ export default function App(): JSX.Element {
   }
 
   return (
-    <main className="app-shell">
+    <div className={`app-window platform-${platform || 'loading'} background-${theme.background.mode}`}>
+      <div className="app-background" aria-hidden="true" />
+      <header className="window-titlebar">
+        <div className="window-drag-region">
+          <div className="window-brand">
+            <strong>Steal</strong>
+            <span
+              className={status.running ? 'window-status-dot running' : 'window-status-dot stopped'}
+              title={status.running ? 'Proxy running' : 'Proxy stopped'}
+              aria-label={status.running ? 'Proxy running' : 'Proxy stopped'}
+            />
+          </div>
+        </div>
+        {platform && platform !== 'darwin' && (
+          <div className="window-controls">
+            <button title="Minimize" aria-label="Minimize" onClick={() => void window.steal.minimizeWindow()}>
+              <Minus size={15} />
+            </button>
+            <button
+              title={windowMaximized ? 'Restore' : 'Maximize'}
+              aria-label={windowMaximized ? 'Restore' : 'Maximize'}
+              onClick={() => void window.steal.toggleMaximizeWindow().then(setWindowMaximized)}
+            >
+              {windowMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+            <button className="close" title="Close" aria-label="Close" onClick={() => void window.steal.closeWindow()}>
+              <X size={16} />
+            </button>
+          </div>
+        )}
+      </header>
+      <main className="app-shell">
       <nav className="mode-rail" aria-label="Mode navigation">
         <button
           className={activeMode === 'capture' ? 'active' : ''}
@@ -825,11 +972,12 @@ export default function App(): JSX.Element {
             </div>
             <button className={settingsCategory === 'startup' ? 'settings-category active' : 'settings-category'} onClick={() => setSettingsCategory('startup')}>
               <strong>Startup</strong>
-              <span>Proxy and browser defaults</span>
             </button>
             <button className={settingsCategory === 'browser' ? 'settings-category active' : 'settings-category'} onClick={() => setSettingsCategory('browser')}>
               <strong>Browser</strong>
-              <span>Embedded or Chrome mode</span>
+            </button>
+            <button className={settingsCategory === 'theme' ? 'settings-category active' : 'settings-category'} onClick={() => setSettingsCategory('theme')}>
+              <strong>Theme</strong>
             </button>
           </aside>
 
@@ -926,6 +1074,99 @@ export default function App(): JSX.Element {
                 )}
               </>
             )}
+            {settingsCategory === 'theme' && (
+              <>
+                <div className="settings-page-title">
+                  <strong>Theme</strong>
+                  <span>Choose a preset or edit theme.json externally with optional hot reload.</span>
+                </div>
+                <div className="setting-card theme-editor-card">
+                  <div>
+                    <strong>{theme.name || 'Theme'}</strong>
+                    <span>Open theme.json for manual edits. Hot reload applies valid JSON changes as soon as the file is saved.</span>
+                  </div>
+                  <div className="theme-editor-actions">
+                    <button onClick={() => void window.steal.openThemeFile()}>Open JSON</button>
+                    <button onClick={() => void resetTheme()} disabled={themeSaving}>Reset</button>
+                    <button className={themeHotReload ? 'system-proxy-toggle active' : 'system-proxy-toggle'} onClick={() => void toggleThemeHotReload(!themeHotReload)}>
+                      Hot Reload {themeHotReload ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+                <div className="theme-preset-grid">
+                  {themePresets.map((preset) => (
+                    <button
+                      key={preset.name}
+                      className={theme.name === preset.name ? 'theme-preset active' : 'theme-preset'}
+                      onClick={() => void saveTheme(preset)}
+                    >
+                      <span className="theme-preset-swatches" aria-hidden="true">
+                        <i style={{ background: preset.colors.appBackground }} />
+                        <i style={{ background: preset.colors.surface }} />
+                        <i style={{ background: preset.colors.primary }} />
+                        <i style={{ background: preset.colors.danger }} />
+                      </span>
+                      <strong>{preset.name}</strong>
+                    </button>
+                  ))}
+                </div>
+                <div className="setting-card background-card">
+                  <div>
+                    <strong>Custom background</strong>
+                    <span>Choose a solid, transparent, or image background. Values are saved in theme.json.</span>
+                  </div>
+                  <div className="background-controls">
+                    <div className="mode-choice">
+                      {(['solid', 'transparent', 'image'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          className={theme.background.mode === mode ? 'active' : ''}
+                          onClick={() => void selectBackgroundMode(mode)}
+                        >
+                          {mode === 'solid' ? 'Solid' : mode === 'transparent' ? 'Transparent' : 'Image'}
+                        </button>
+                      ))}
+                    </div>
+                    <label className="range-control">
+                      <span>Opacity</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={theme.background.opacity}
+                        onChange={(event) => void updateThemeBackground({ opacity: Number(event.target.value) })}
+                      />
+                    </label>
+                    <button onClick={() => void chooseBackgroundImage()}>Choose image</button>
+                    <label className="range-control">
+                      <span>Image opacity</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.05"
+                        value={theme.background.imageOpacity}
+                        disabled={theme.background.mode !== 'image'}
+                        onChange={(event) => void updateThemeBackground({ imageOpacity: Number(event.target.value) })}
+                      />
+                    </label>
+                    <label className="range-control">
+                      <span>Image brightness</span>
+                      <input
+                        type="range"
+                        min="0.2"
+                        max="1.6"
+                        step="0.05"
+                        value={theme.background.imageBrightness}
+                        disabled={theme.background.mode !== 'image'}
+                        onChange={(event) => void updateThemeBackground({ imageBrightness: Number(event.target.value) })}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </>
+            )}
           </section>
         </section>
       )}
@@ -986,7 +1227,8 @@ export default function App(): JSX.Element {
         <span>{status.running ? 'Proxy running' : 'Proxy stopped'}</span>
         <span>{status.error || message || `CA: ${status.caCertPath || 'not generated yet'} | Set external clients to HTTP/HTTPS proxy 127.0.0.1:8899.`}</span>
       </footer>
-    </main>
+      </main>
+    </div>
   )
 }
 
@@ -1006,6 +1248,63 @@ function startDocumentDrag(cursor: 'col-resize' | 'row-resize', onMove: (event: 
 
   document.addEventListener('pointermove', handlePointerMove)
   document.addEventListener('pointerup', handlePointerUp, { once: true })
+}
+
+function applyTheme(theme: AppTheme): void {
+  const root = document.documentElement
+  void window.steal.applyThemeBackground(theme.background)
+  for (const [key, value] of Object.entries(theme.colors)) {
+    root.style.setProperty(`--theme-${kebabCase(key)}`, value)
+  }
+  for (const [method, value] of Object.entries(theme.methods)) {
+    root.style.setProperty(`--theme-method-${method}-text`, value.text)
+    root.style.setProperty(`--theme-method-${method}-background`, value.background)
+  }
+  root.style.setProperty('--theme-background-opacity', String(theme.background.opacity))
+  root.style.setProperty('--theme-background-image-opacity', String(theme.background.imageOpacity))
+  root.style.setProperty('--theme-background-image-brightness', String(theme.background.imageBrightness))
+  root.style.setProperty('--theme-transparent-surface', colorWithAlpha(theme.colors.surface, 0.22))
+  root.style.setProperty('--theme-image-surface', colorWithAlpha(theme.colors.surface, 0.58))
+  root.style.setProperty('--theme-transparent-subtle', colorWithAlpha(theme.colors.surfaceSubtle, 0.18))
+  root.style.setProperty('--theme-image-subtle', colorWithAlpha(theme.colors.surfaceSubtle, 0.48))
+  root.style.setProperty('--theme-background-image', 'none')
+  if (theme.background.mode === 'image' && theme.background.imagePath) {
+    root.dataset.themeImagePath = theme.background.imagePath
+    void window.steal.getThemeImageDataUrl(theme.background.imagePath).then((dataUrl) => {
+      if (root.dataset.themeImagePath !== theme.background.imagePath) return
+      if (!dataUrl) {
+        console.warn(`Theme background image could not be loaded: ${theme.background.imagePath}`)
+        return
+      }
+      root.style.setProperty('--theme-background-image', `url("${dataUrl}")`)
+    })
+  } else {
+    delete root.dataset.themeImagePath
+  }
+}
+
+function kebabCase(value: string): string {
+  return value.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`)
+}
+
+function colorWithAlpha(value: string, alpha: number): string {
+  const hex = value.trim()
+  const short = hex.match(/^#([0-9a-fA-F]{3})$/)
+  if (short) {
+    const [r, g, b] = short[1].split('').map((part) => parseInt(part + part, 16))
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+
+  const long = hex.match(/^#([0-9a-fA-F]{6})/)
+  if (long) {
+    const raw = long[1]
+    const r = parseInt(raw.slice(0, 2), 16)
+    const g = parseInt(raw.slice(2, 4), 16)
+    const b = parseInt(raw.slice(4, 6), 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+
+  return `rgba(255, 255, 255, ${alpha})`
 }
 
 function SettingToggle({
