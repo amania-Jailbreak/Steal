@@ -736,6 +736,8 @@ let settingsStore;
 let certificatePromptInFlight = false;
 let tray;
 let trayProxyTransitioning = false;
+let quitCleanupStarted = false;
+let quitCleanupComplete = false;
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -787,9 +789,15 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
-app.on("before-quit", () => {
-  restoreSystemProxy().catch(() => void 0);
-  proxyService?.stop().catch(() => void 0);
+app.on("before-quit", (event) => {
+  if (quitCleanupComplete) return;
+  event.preventDefault();
+  if (quitCleanupStarted) return;
+  quitCleanupStarted = true;
+  void cleanupBeforeQuit().finally(() => {
+    quitCleanupComplete = true;
+    app.quit();
+  });
 });
 app.on("certificate-error", (event, webContents, _url, _error, _certificate, callback) => {
   if (webContents.getType() === "webview") {
@@ -902,11 +910,7 @@ async function startProxyWithSystemSetup() {
   return nextStatus;
 }
 async function stopProxyWithSystemRestore() {
-  try {
-    await restoreSystemProxy();
-  } catch (error) {
-    console.error("Failed to restore system proxy", error);
-  }
+  await removeSystemProxyFromSystem();
   try {
     const status = await proxyService.stop();
     updateTray(status);
@@ -917,6 +921,26 @@ async function stopProxyWithSystemRestore() {
     updateTray(status);
     return status;
   }
+}
+async function removeSystemProxyFromSystem() {
+  const status = proxyService.getStatus();
+  try {
+    await restoreSystemProxy();
+  } catch (error) {
+    console.error("Failed to restore system proxy", error);
+  }
+  try {
+    await disableStealSystemProxy(status.host, status.port);
+  } catch (error) {
+    console.error("Failed to disable Steal system proxy", error);
+  }
+}
+async function cleanupBeforeQuit() {
+  if (!proxyService) {
+    await restoreSystemProxy().catch(() => void 0);
+    return;
+  }
+  await stopProxyWithSystemRestore();
 }
 function createTray() {
   tray = new Tray(createTrayIcon());

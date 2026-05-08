@@ -17,6 +17,8 @@ let settingsStore: SettingsStore
 let certificatePromptInFlight = false
 let tray: Tray | undefined
 let trayProxyTransitioning = false
+let quitCleanupStarted = false
+let quitCleanupComplete = false
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
 
@@ -79,9 +81,15 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
-  restoreSystemProxy().catch(() => undefined)
-  proxyService?.stop().catch(() => undefined)
+app.on('before-quit', (event) => {
+  if (quitCleanupComplete) return
+  event.preventDefault()
+  if (quitCleanupStarted) return
+  quitCleanupStarted = true
+  void cleanupBeforeQuit().finally(() => {
+    quitCleanupComplete = true
+    app.quit()
+  })
 })
 
 app.on('certificate-error', (event, webContents, _url, _error, _certificate, callback) => {
@@ -200,11 +208,7 @@ async function startProxyWithSystemSetup(): Promise<ProxyStatus> {
 }
 
 async function stopProxyWithSystemRestore(): Promise<ProxyStatus> {
-  try {
-    await restoreSystemProxy()
-  } catch (error) {
-    console.error('Failed to restore system proxy', error)
-  }
+  await removeSystemProxyFromSystem()
 
   try {
     const status = await proxyService.stop()
@@ -216,6 +220,29 @@ async function stopProxyWithSystemRestore(): Promise<ProxyStatus> {
     updateTray(status)
     return status
   }
+}
+
+async function removeSystemProxyFromSystem(): Promise<void> {
+  const status = proxyService.getStatus()
+  try {
+    await restoreSystemProxy()
+  } catch (error) {
+    console.error('Failed to restore system proxy', error)
+  }
+
+  try {
+    await disableStealSystemProxy(status.host, status.port)
+  } catch (error) {
+    console.error('Failed to disable Steal system proxy', error)
+  }
+}
+
+async function cleanupBeforeQuit(): Promise<void> {
+  if (!proxyService) {
+    await restoreSystemProxy().catch(() => undefined)
+    return
+  }
+  await stopProxyWithSystemRestore()
 }
 
 function createTray(): void {
