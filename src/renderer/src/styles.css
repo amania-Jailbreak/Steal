@@ -1604,6 +1604,17 @@ button:hover {
   font-size: 12px;
 }
 
+.search-match-count {
+  min-width: 20px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--theme-primary-soft);
+  color: var(--theme-primary);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
 .resource-filter-list {
   display: flex;
   flex-wrap: wrap;
@@ -1907,6 +1918,63 @@ mark {
   display: flex;
   flex-direction: column;
   background: var(--theme-surface);
+}
+
+.ws-messages {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 10px;
+  background: var(--theme-surface);
+}
+
+.ws-message-card {
+  min-height: 0;
+  display: grid;
+  border: 1px solid var(--theme-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--theme-surface-subtle);
+}
+
+.ws-message-meta {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--theme-border);
+  font-size: 11px;
+  color: var(--theme-text-muted);
+}
+
+.ws-message-meta strong {
+  color: var(--theme-text-strong);
+  text-transform: uppercase;
+}
+
+.ws-direction {
+  min-width: 34px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.ws-direction.incoming {
+  background: var(--theme-success-soft);
+  color: var(--theme-success);
+}
+
+.ws-direction.outgoing {
+  background: var(--theme-primary-soft);
+  color: var(--theme-primary);
 }
 
 .detail-toolbar {

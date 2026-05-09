@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { Proxy as MitmProxy } from 'http-mitm-proxy'
 import { decodeBody } from './body-decode'
 import { findClientProcess } from './client-process'
-import type { CapturedExchange, HeaderMap, ProxyStatus } from '../shared/types'
+import type { CapturedExchange, HeaderMap, ProxyStatus, WebSocketMessage } from '../shared/types'
 
 type ProxyContext = Record<string, any>
 const browserSourceHeader = 'x-steal-source'
@@ -97,6 +97,10 @@ export class ProxyService extends EventEmitter {
       const requestChunks: Buffer[] = []
       const responseChunks: Buffer[] = []
       const request = ctx.clientToProxyRequest
+      if (headerToString(request.headers.upgrade).toLowerCase() === 'websocket') {
+        callback()
+        return
+      }
       const host = headerToString(request.headers.host)
       const protocol = ctx.isSSL ? 'https' : 'http'
       const path = request.url || '/'
@@ -175,14 +179,92 @@ export class ProxyService extends EventEmitter {
         capture.requestBodyBase64 = decodedRequestBody.base64
         capture.responseBody = decodedResponseBody.text
         capture.responseBodyBase64 = decodedResponseBody.base64
-        if (!this.capturePaused) {
-          this.captures.push(capture)
-          this.emit('capture', capture)
-        }
+        this.upsertCapture(capture)
         done()
         })().catch((error: Error) => done(error))
       })
 
+    })
+
+    proxy.onWebSocketConnection((ctx: ProxyContext, callback: (error?: Error) => void) => {
+      const request = ctx.clientToProxyRequest
+      const host = headerToString(request.headers.host)
+      const protocol = ctx.isSSL ? 'https' : 'http'
+      const path = request.url || '/'
+      const httpUrl = path.startsWith('http://') || path.startsWith('https://') ? path : `${protocol}://${host}${path}`
+      const wsUrl = httpUrl.replace(/^http/i, 'ws')
+      const source = headerToString(request.headers[browserSourceHeader]) === 'browser' ? 'browser' : 'proxy'
+      const clientPort = request.socket.remotePort || 0
+      const startedAt = new Date().toISOString()
+      const capture: CapturedExchange = {
+        id: crypto.randomUUID(),
+        method: request.method || 'GET',
+        url: wsUrl,
+        protocol,
+        host,
+        path,
+        source,
+        sourceAppName: source === 'browser' ? 'Browser' : undefined,
+        sourceProcessId: undefined,
+        startedAt,
+        durationMs: 0,
+        requestHeaders: normalizeHeaders(request.headers),
+        requestBody: '',
+        requestSize: 0,
+        responseStatusCode: 101,
+        responseStatusMessage: 'Switching Protocols',
+        responseHeaders: {},
+        responseBody: '',
+        responseSize: 0,
+        isWebSocket: true,
+        webSocketMessages: []
+      }
+
+      const sourceAppLookup = source === 'browser'
+        ? Promise.resolve({ name: 'Browser', pid: undefined })
+        : findClientProcess(clientPort, this.port)
+      delete request.headers[browserSourceHeader]
+      ctx.stealSourceAppLookup = sourceAppLookup
+      ctx.stealCapture = capture
+
+      void sourceAppLookup.then((sourceApp) => {
+        if (sourceApp.isStealChrome) capture.source = 'browser'
+        capture.sourceAppName = sourceApp.name || capture.sourceAppName
+        capture.sourceProcessId = sourceApp.pid
+        this.upsertCapture(capture)
+      }).finally(() => callback())
+    })
+
+    proxy.onWebSocketFrame((ctx: ProxyContext, type: string, fromServer: boolean, data: any, flags: any, callback: (error: Error | null, data: any, flags: any) => void) => {
+      const capture = ctx.stealCapture as CapturedExchange | undefined
+      if (capture?.isWebSocket) {
+        const message = webSocketMessageFromFrame(type, fromServer, data)
+        capture.webSocketMessages = [...(capture.webSocketMessages || []), message]
+        capture.responseSize += message.size
+        capture.durationMs = Date.now() - Date.parse(capture.startedAt)
+        this.upsertCapture(capture)
+      }
+      callback(null, data, flags)
+    })
+
+    proxy.onWebSocketClose((ctx: ProxyContext, code: number, message: Buffer | string | undefined, callback: (error?: Error) => void) => {
+      const capture = ctx.stealCapture as CapturedExchange | undefined
+      if (capture?.isWebSocket) {
+        capture.durationMs = Date.now() - Date.parse(capture.startedAt)
+        capture.webSocketCloseCode = typeof code === 'number' ? code : undefined
+        capture.webSocketCloseReason = bufferToUtf8(message)
+        this.upsertCapture(capture)
+      }
+      callback()
+    })
+
+    proxy.onWebSocketError((ctx: ProxyContext, error: Error) => {
+      const capture = ctx.stealCapture as CapturedExchange | undefined
+      if (capture?.isWebSocket) {
+        capture.webSocketError = error.message
+        capture.durationMs = Date.now() - Date.parse(capture.startedAt)
+        this.upsertCapture(capture)
+      }
     })
 
     await new Promise<void>((resolve, reject) => {
@@ -211,6 +293,16 @@ export class ProxyService extends EventEmitter {
     this.status = { ...this.status, running: false, error: undefined }
     this.emit('status', this.getStatus())
     return this.getStatus()
+  }
+
+  private upsertCapture(capture: CapturedExchange): void {
+    const index = this.captures.findIndex((item) => item.id === capture.id)
+    if (index === -1) {
+      if (!this.capturePaused) this.captures.push(capture)
+    } else {
+      this.captures[index] = capture
+    }
+    if (!this.capturePaused) this.emit('capture', capture)
   }
 }
 
@@ -259,6 +351,45 @@ function isBenignProxyError(kind: string | undefined, error: Error): boolean {
   if (kind === 'HTTPS_CLIENT_ERROR' && (code === 'ECONNRESET' || error.message === 'socket hang up')) return true
   if (code === 'ECONNRESET' || code === 'EPIPE') return true
   return false
+}
+
+function webSocketMessageFromFrame(type: string, fromServer: boolean, data: any): WebSocketMessage {
+  const buffer = rawDataToBuffer(data)
+  const text = decodeWebSocketText(buffer)
+  const isBinary = text === undefined
+  return {
+    id: crypto.randomUUID(),
+    direction: fromServer ? 'incoming' : 'outgoing',
+    type: type === 'ping' || type === 'pong' ? type : 'message',
+    timestamp: new Date().toISOString(),
+    size: buffer.byteLength,
+    text: isBinary ? `[binary frame: ${buffer.byteLength} bytes]` : text,
+    base64: isBinary ? buffer.toString('base64') : undefined,
+    isBinary
+  }
+}
+
+function rawDataToBuffer(data: any): Buffer {
+  if (Buffer.isBuffer(data)) return data
+  if (Array.isArray(data)) return Buffer.concat(data.map((item) => Buffer.isBuffer(item) ? item : Buffer.from(item)))
+  if (typeof data === 'string') return Buffer.from(data)
+  if (data instanceof ArrayBuffer) return Buffer.from(data)
+  return Buffer.from(data || '')
+}
+
+function decodeWebSocketText(buffer: Buffer): string | undefined {
+  try {
+    const text = buffer.toString('utf8')
+    if (Buffer.from(text, 'utf8').equals(buffer)) return text
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+function bufferToUtf8(value: Buffer | string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  return Buffer.isBuffer(value) ? value.toString('utf8') : String(value)
 }
 
 function installProxyConsoleFilter(): void {

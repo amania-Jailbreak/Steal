@@ -1,8 +1,8 @@
-import { app, BrowserWindow, session, ipcMain, shell, clipboard, dialog, Tray, Menu, nativeImage } from "electron";
+import { app, dialog, BrowserWindow, session, ipcMain, shell, clipboard, Tray, Menu, nativeImage } from "electron";
 import { execFile } from "node:child_process";
 import { join, dirname } from "node:path";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
-import { mkdirSync, existsSync, watch } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync, watch } from "node:fs";
 import { EventEmitter } from "node:events";
 import { isIP } from "node:net";
 import { Proxy } from "http-mitm-proxy";
@@ -202,6 +202,10 @@ class ProxyService extends EventEmitter {
       const requestChunks = [];
       const responseChunks = [];
       const request = ctx.clientToProxyRequest;
+      if (headerToString$1(request.headers.upgrade).toLowerCase() === "websocket") {
+        callback();
+        return;
+      }
       const host = headerToString$1(request.headers.host);
       const protocol = ctx.isSSL ? "https" : "http";
       const path = request.url || "/";
@@ -272,13 +276,83 @@ class ProxyService extends EventEmitter {
           capture.requestBodyBase64 = decodedRequestBody.base64;
           capture.responseBody = decodedResponseBody.text;
           capture.responseBodyBase64 = decodedResponseBody.base64;
-          if (!this.capturePaused) {
-            this.captures.push(capture);
-            this.emit("capture", capture);
-          }
+          this.upsertCapture(capture);
           done();
         })().catch((error) => done(error));
       });
+    });
+    proxy.onWebSocketConnection((ctx, callback) => {
+      const request = ctx.clientToProxyRequest;
+      const host = headerToString$1(request.headers.host);
+      const protocol = ctx.isSSL ? "https" : "http";
+      const path = request.url || "/";
+      const httpUrl = path.startsWith("http://") || path.startsWith("https://") ? path : `${protocol}://${host}${path}`;
+      const wsUrl = httpUrl.replace(/^http/i, "ws");
+      const source = headerToString$1(request.headers[browserSourceHeader]) === "browser" ? "browser" : "proxy";
+      const clientPort = request.socket.remotePort || 0;
+      const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+      const capture = {
+        id: crypto.randomUUID(),
+        method: request.method || "GET",
+        url: wsUrl,
+        protocol,
+        host,
+        path,
+        source,
+        sourceAppName: source === "browser" ? "Browser" : void 0,
+        sourceProcessId: void 0,
+        startedAt,
+        durationMs: 0,
+        requestHeaders: normalizeHeaders(request.headers),
+        requestBody: "",
+        requestSize: 0,
+        responseStatusCode: 101,
+        responseStatusMessage: "Switching Protocols",
+        responseHeaders: {},
+        responseBody: "",
+        responseSize: 0,
+        isWebSocket: true,
+        webSocketMessages: []
+      };
+      const sourceAppLookup = source === "browser" ? Promise.resolve({ name: "Browser", pid: void 0 }) : findClientProcess(clientPort, this.port);
+      delete request.headers[browserSourceHeader];
+      ctx.stealSourceAppLookup = sourceAppLookup;
+      ctx.stealCapture = capture;
+      void sourceAppLookup.then((sourceApp) => {
+        if (sourceApp.isStealChrome) capture.source = "browser";
+        capture.sourceAppName = sourceApp.name || capture.sourceAppName;
+        capture.sourceProcessId = sourceApp.pid;
+        this.upsertCapture(capture);
+      }).finally(() => callback());
+    });
+    proxy.onWebSocketFrame((ctx, type, fromServer, data, flags, callback) => {
+      const capture = ctx.stealCapture;
+      if (capture?.isWebSocket) {
+        const message = webSocketMessageFromFrame(type, fromServer, data);
+        capture.webSocketMessages = [...capture.webSocketMessages || [], message];
+        capture.responseSize += message.size;
+        capture.durationMs = Date.now() - Date.parse(capture.startedAt);
+        this.upsertCapture(capture);
+      }
+      callback(null, data, flags);
+    });
+    proxy.onWebSocketClose((ctx, code, message, callback) => {
+      const capture = ctx.stealCapture;
+      if (capture?.isWebSocket) {
+        capture.durationMs = Date.now() - Date.parse(capture.startedAt);
+        capture.webSocketCloseCode = typeof code === "number" ? code : void 0;
+        capture.webSocketCloseReason = bufferToUtf8(message);
+        this.upsertCapture(capture);
+      }
+      callback();
+    });
+    proxy.onWebSocketError((ctx, error) => {
+      const capture = ctx.stealCapture;
+      if (capture?.isWebSocket) {
+        capture.webSocketError = error.message;
+        capture.durationMs = Date.now() - Date.parse(capture.startedAt);
+        this.upsertCapture(capture);
+      }
     });
     await new Promise((resolve, reject) => {
       proxy.listen({ host: this.host, port: this.port, sslCaDir: this.status.sslCaDir }, (error) => {
@@ -304,6 +378,15 @@ class ProxyService extends EventEmitter {
     this.status = { ...this.status, running: false, error: void 0 };
     this.emit("status", this.getStatus());
     return this.getStatus();
+  }
+  upsertCapture(capture) {
+    const index = this.captures.findIndex((item) => item.id === capture.id);
+    if (index === -1) {
+      if (!this.capturePaused) this.captures.push(capture);
+    } else {
+      this.captures[index] = capture;
+    }
+    if (!this.capturePaused) this.emit("capture", capture);
   }
 }
 function normalizeHeaders(headers) {
@@ -346,6 +429,41 @@ function isBenignProxyError(kind, error) {
   if (kind === "HTTPS_CLIENT_ERROR" && (code === "ECONNRESET" || error.message === "socket hang up")) return true;
   if (code === "ECONNRESET" || code === "EPIPE") return true;
   return false;
+}
+function webSocketMessageFromFrame(type, fromServer, data) {
+  const buffer = rawDataToBuffer(data);
+  const text = decodeWebSocketText(buffer);
+  const isBinary = text === void 0;
+  return {
+    id: crypto.randomUUID(),
+    direction: fromServer ? "incoming" : "outgoing",
+    type: type === "ping" || type === "pong" ? type : "message",
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    size: buffer.byteLength,
+    text: isBinary ? `[binary frame: ${buffer.byteLength} bytes]` : text,
+    base64: isBinary ? buffer.toString("base64") : void 0,
+    isBinary
+  };
+}
+function rawDataToBuffer(data) {
+  if (Buffer.isBuffer(data)) return data;
+  if (Array.isArray(data)) return Buffer.concat(data.map((item) => Buffer.isBuffer(item) ? item : Buffer.from(item)));
+  if (typeof data === "string") return Buffer.from(data);
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  return Buffer.from(data || "");
+}
+function decodeWebSocketText(buffer) {
+  try {
+    const text = buffer.toString("utf8");
+    if (Buffer.from(text, "utf8").equals(buffer)) return text;
+    return void 0;
+  } catch {
+    return void 0;
+  }
+}
+function bufferToUtf8(value) {
+  if (value === void 0) return void 0;
+  return Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
 }
 function installProxyConsoleFilter() {
   if (proxyConsoleFilterInstalled) return;
@@ -1278,11 +1396,158 @@ async function installTrustedCertificateInTerminal(command) {
 async function runExecFile(file, args, timeout = 8e3) {
   return execFileAsync(file, args, { ...defaultExecOptions, timeout });
 }
+class PluginLoader {
+  plugins = /* @__PURE__ */ new Map();
+  pluginsDir;
+  configFile;
+  api;
+  constructor(api) {
+    this.pluginsDir = join(app.getPath("userData"), "steal-plugins");
+    this.configFile = join(this.pluginsDir, "plugins.json");
+    this.api = api;
+    if (!existsSync(this.pluginsDir)) {
+      mkdirSync(this.pluginsDir, { recursive: true });
+    }
+  }
+  async loadPlugin(path) {
+    try {
+      const absolutePath = path.startsWith("/") ? path : join(this.pluginsDir, path);
+      if (!existsSync(absolutePath)) {
+        throw new Error(`Plugin file not found: ${absolutePath}`);
+      }
+      const pluginCode = readFileSync(absolutePath, "utf-8");
+      const pluginFactory = new Function("require", "module", "exports", pluginCode);
+      const moduleExports = {};
+      const module = { exports: moduleExports };
+      pluginFactory(require2, module, module.exports);
+      const plugin = module.exports;
+      if (!plugin.name || !plugin.version) {
+        throw new Error("Plugin must have name and version properties");
+      }
+      if (this.plugins.has(plugin.name)) {
+        throw new Error(`Plugin ${plugin.name} is already loaded`);
+      }
+      const savedConfig = this.loadConfig();
+      plugin.enabled = savedConfig[plugin.name]?.enabled ?? true;
+      this.plugins.set(plugin.name, plugin);
+      if (plugin.enabled && plugin.onLoad) {
+        await plugin.onLoad(this.api);
+      }
+      return plugin;
+    } catch (error) {
+      throw new Error(`Failed to load plugin from ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  async unloadPlugin(name) {
+    const plugin = this.plugins.get(name);
+    if (!plugin) {
+      throw new Error(`Plugin ${name} not found`);
+    }
+    if (plugin.onUnload) {
+      await plugin.onUnload();
+    }
+    this.plugins.delete(name);
+  }
+  getPlugins() {
+    return Array.from(this.plugins.values());
+  }
+  getPlugin(name) {
+    return this.plugins.get(name);
+  }
+  enablePlugin(name) {
+    const plugin = this.plugins.get(name);
+    if (!plugin) {
+      throw new Error(`Plugin ${name} not found`);
+    }
+    plugin.enabled = true;
+    this.saveConfig();
+  }
+  disablePlugin(name) {
+    const plugin = this.plugins.get(name);
+    if (!plugin) {
+      throw new Error(`Plugin ${name} not found`);
+    }
+    plugin.enabled = false;
+    this.saveConfig();
+  }
+  async loadAllPlugins() {
+    if (!existsSync(this.pluginsDir)) {
+      return;
+    }
+    const files = readdirSync(this.pluginsDir);
+    const jsFiles = files.filter((file) => file.endsWith(".js"));
+    for (const file of jsFiles) {
+      try {
+        await this.loadPlugin(file);
+      } catch (error) {
+        console.error(`Failed to load plugin ${file}:`, error);
+      }
+    }
+  }
+  loadConfig() {
+    if (!existsSync(this.configFile)) {
+      return {};
+    }
+    try {
+      const content = readFileSync(this.configFile, "utf-8");
+      return JSON.parse(content);
+    } catch {
+      return {};
+    }
+  }
+  saveConfig() {
+    const config = {};
+    for (const [name, plugin] of this.plugins) {
+      config[name] = { enabled: plugin.enabled ?? true };
+    }
+    writeFileSync(this.configFile, JSON.stringify(config, null, 2));
+  }
+}
+class PluginAPI {
+  proxyService;
+  constructor(proxyService2) {
+    this.proxyService = proxyService2;
+  }
+  getCaptures() {
+    return this.proxyService.getCaptures();
+  }
+  getSelectedCapture() {
+    return void 0;
+  }
+  showMessage(message) {
+    dialog.showMessageBox({
+      type: "info",
+      title: "Plugin Message",
+      message
+    });
+  }
+  async showDialog(options) {
+    const result = await dialog.showMessageBox({
+      type: options.type || "info",
+      title: options.title || "Plugin Dialog",
+      message: options.message,
+      buttons: options.buttons || ["OK", "Cancel"]
+    });
+    return result.response === 0;
+  }
+  async fetch(url, options) {
+    return fetch(url, options);
+  }
+  async readFile(path) {
+    const { readFile: readFile2 } = await import("node:fs/promises");
+    return readFile2(path, "utf-8");
+  }
+  async writeFile(path, content) {
+    const { writeFile: writeFile2 } = await import("node:fs/promises");
+    return writeFile2(path, content, "utf-8");
+  }
+}
 let mainWindow;
 let proxyService;
 let savedApiStore;
 let settingsStore;
 let themeStore;
+let pluginLoader;
 let certificatePromptInFlight = false;
 let tray;
 let trayProxyTransitioning = false;
@@ -1333,6 +1598,9 @@ app.whenReady().then(async () => {
   settingsStore = new SettingsStore(join(dataDir, "settings.json"));
   themeStore = new ThemeStore(join(dataDir, "theme.json"));
   const settings = await settingsStore.get();
+  const pluginAPI = new PluginAPI(proxyService);
+  pluginLoader = new PluginLoader(pluginAPI);
+  await pluginLoader.loadAllPlugins();
   registerIpc();
   wireProxyEvents();
   await configureCaptureSession();
@@ -1505,6 +1773,81 @@ function registerIpc() {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
   ipcMain.handle("browser:launch-chrome", (_event, url) => launchChromeBrowser(url));
+  ipcMain.handle("plugins:list", () => {
+    return pluginLoader.getPlugins().map((p) => ({
+      name: p.name,
+      version: p.version,
+      description: p.description,
+      author: p.author,
+      enabled: p.enabled ?? true
+    }));
+  });
+  ipcMain.handle("plugins:enable", (_event, name) => {
+    pluginLoader.enablePlugin(name);
+  });
+  ipcMain.handle("plugins:disable", (_event, name) => {
+    pluginLoader.disablePlugin(name);
+  });
+  ipcMain.handle("plugins:load", async (_event, path) => {
+    const plugin = await pluginLoader.loadPlugin(path);
+    return {
+      name: plugin.name,
+      version: plugin.version,
+      description: plugin.description,
+      author: plugin.author,
+      enabled: plugin.enabled ?? true
+    };
+  });
+  ipcMain.handle("plugins:get-filters", () => {
+    const filters = [];
+    for (const plugin of pluginLoader.getPlugins()) {
+      if (!plugin.enabled || !plugin.filters) continue;
+      for (const filterName of Object.keys(plugin.filters)) {
+        filters.push({ name: filterName, pluginName: plugin.name });
+      }
+    }
+    return filters;
+  });
+  ipcMain.handle("plugins:get-exporters", () => {
+    const exporters = [];
+    for (const plugin of pluginLoader.getPlugins()) {
+      if (!plugin.enabled || !plugin.exporters) continue;
+      for (const exporterName of Object.keys(plugin.exporters)) {
+        exporters.push({ name: exporterName, pluginName: plugin.name });
+      }
+    }
+    return exporters;
+  });
+  ipcMain.handle("plugins:run-filter", (_event, pluginName, filterName, captures) => {
+    const plugin = pluginLoader.getPlugin(pluginName);
+    if (!plugin || !plugin.enabled || !plugin.filters) return captures;
+    const filter = plugin.filters[filterName];
+    if (!filter) return captures;
+    return captures.filter(filter);
+  });
+  ipcMain.handle("plugins:run-export", async (_event, pluginName, exporterName, captures) => {
+    const plugin = pluginLoader.getPlugin(pluginName);
+    if (!plugin || !plugin.enabled || !plugin.exporters) throw new Error("Plugin or exporter not found");
+    const exporter = plugin.exporters[exporterName];
+    if (!exporter) throw new Error("Exporter not found");
+    const result = exporter(captures);
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: `Export with ${exporterName}`,
+      defaultPath: `export-${Date.now()}`,
+      filters: [{ name: "File", extensions: ["txt", "md", "json"] }]
+    });
+    if (canceled || !filePath) return void 0;
+    await writeFile(filePath, typeof result === "string" ? result : result);
+    return filePath;
+  });
+  ipcMain.handle("plugins:process-request", (_event, request) => {
+    let processed = request;
+    for (const plugin of pluginLoader.getPlugins()) {
+      if (!plugin.enabled || !plugin.processors?.onRequest) continue;
+      processed = plugin.processors.onRequest(processed);
+    }
+    return processed;
+  });
 }
 async function setThemeHotReload(enabled) {
   themeHotReloadEnabled = enabled;

@@ -1,5 +1,16 @@
 export type HeaderMap = Record<string, string | string[] | undefined>
 
+export interface WebSocketMessage {
+  id: string
+  direction: 'incoming' | 'outgoing'
+  type: 'message' | 'ping' | 'pong'
+  timestamp: string
+  size: number
+  text: string
+  base64?: string
+  isBinary: boolean
+}
+
 export interface CapturedExchange {
   id: string
   method: string
@@ -22,6 +33,11 @@ export interface CapturedExchange {
   responseBody: string
   responseBodyBase64?: string
   responseSize: number
+  isWebSocket?: boolean
+  webSocketMessages?: WebSocketMessage[]
+  webSocketCloseCode?: number
+  webSocketCloseReason?: string
+  webSocketError?: string
   savedName?: string
   tags?: string[]
 }
@@ -170,4 +186,14 @@ export interface AppApi {
   onCapture: (callback: (exchange: CapturedExchange) => void) => () => void
   onProxyStatus: (callback: (status: ProxyStatus) => void) => () => void
   onThemeChanged: (callback: (theme: AppTheme) => void) => () => void
+  
+  listPlugins: () => Promise<Array<{ name: string; version: string; description?: string; author?: string; enabled: boolean }>>
+  enablePlugin: (name: string) => Promise<void>
+  disablePlugin: (name: string) => Promise<void>
+  loadPlugin: (path: string) => Promise<{ name: string; version: string; description?: string; author?: string; enabled: boolean }>
+  getPluginFilters: () => Promise<Array<{ name: string; pluginName: string }>>
+  getPluginExporters: () => Promise<Array<{ name: string; pluginName: string }>>
+  runPluginFilter: (pluginName: string, filterName: string, captures: CapturedExchange[]) => Promise<CapturedExchange[]>
+  runPluginExport: (pluginName: string, exporterName: string, captures: CapturedExchange[]) => Promise<string | undefined>
+  processRequest: (request: ReplayRequest) => Promise<ReplayRequest>
 }

@@ -53,7 +53,19 @@ const api: AppApi = {
     const listener = (_event: Electron.IpcRendererEvent, theme: AppTheme): void => callback(theme)
     ipcRenderer.on('theme:changed', listener)
     return () => ipcRenderer.removeListener('theme:changed', listener)
-  }
+  },
+  
+  listPlugins: () => ipcRenderer.invoke('plugins:list'),
+  enablePlugin: (name: string) => ipcRenderer.invoke('plugins:enable', name),
+  disablePlugin: (name: string) => ipcRenderer.invoke('plugins:disable', name),
+  loadPlugin: (path: string) => ipcRenderer.invoke('plugins:load', path),
+  getPluginFilters: () => ipcRenderer.invoke('plugins:get-filters'),
+  getPluginExporters: () => ipcRenderer.invoke('plugins:get-exporters'),
+  runPluginFilter: (pluginName: string, filterName: string, captures: CapturedExchange[]) =>
+    ipcRenderer.invoke('plugins:run-filter', pluginName, filterName, captures),
+  runPluginExport: (pluginName: string, exporterName: string, captures: CapturedExchange[]) =>
+    ipcRenderer.invoke('plugins:run-export', pluginName, exporterName, captures),
+  processRequest: (request: ReplayRequest) => ipcRenderer.invoke('plugins:process-request', request)
 }
 
 contextBridge.exposeInMainWorld('steal', api)

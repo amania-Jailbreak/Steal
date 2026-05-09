@@ -10,12 +10,12 @@ import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CapturedExchange,
 import './styles.css'
 
 type AppMode = 'capture' | 'collection' | 'settings'
-type DetailTab = 'headers' | 'body' | 'response'
+type DetailTab = 'headers' | 'body' | 'response' | 'messages'
 type HeaderMode = 'table' | 'raw'
 type CodeLanguage = 'json' | 'javascript' | 'xml' | 'plaintext'
 type RequestEditorTab = 'query' | 'headers' | 'body'
 type ResponseViewerTab = 'headers' | 'body' | 'diff' | 'metrics'
-type SettingsCategory = 'startup' | 'browser' | 'theme'
+type SettingsCategory = 'startup' | 'browser' | 'theme' | 'plugins'
 type CollectionSettingsTab = 'variables' | 'headers' | 'cookies' | 'user-agent'
 type ResourceFilter = 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
 type KeyValueRow = { id: string; key: string; value: string; enabled: boolean }
@@ -221,6 +221,7 @@ export default function App(): JSX.Element {
   const [themeSaving, setThemeSaving] = useState(false)
   const [themeHotReload, setThemeHotReload] = useState(false)
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('startup')
+  const [plugins, setPlugins] = useState<Array<{ name: string; version: string; description?: string; author?: string; enabled: boolean }>>([])
   const [testRequest, setTestRequest] = useState<ReplayRequest>({ method: 'GET', url: '', headers: {}, body: '' })
   const [testQueryRows, setTestQueryRows] = useState<KeyValueRow[]>([])
   const [testHeaderRows, setTestHeaderRows] = useState<KeyValueRow[]>([])
@@ -241,7 +242,7 @@ export default function App(): JSX.Element {
     void refreshAll()
     void window.steal.getAppPlatform().then(setPlatform)
     const removeCapture = window.steal.onCapture((capture) => {
-      setCaptures((current) => [capture, ...current])
+      setCaptures((current) => upsertCaptureList(current, capture))
       setSelectedId((current) => current || capture.id)
     })
     const removeStatus = window.steal.onProxyStatus((nextStatus) => {
@@ -343,6 +344,10 @@ export default function App(): JSX.Element {
   }, [])
 
   useEffect(() => {
+    void window.steal.listPlugins().then(setPlugins)
+  }, [])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.code !== 'Space' || event.repeat || isEditableTarget(event.target)) return
       event.preventDefault()
@@ -377,10 +382,14 @@ export default function App(): JSX.Element {
 
   const filteredCaptures = useMemo(() => {
     const tokens = searchTokens(query)
-    const sourceFiltered = showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser')
-    if (!showFilterPanel) return sourceFiltered
-    return sourceFiltered.filter((capture) => {
-      if (appBrowserOnly && capture.source !== 'browser') return false
+
+    if (!showFilterPanel) {
+      return showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser')
+    }
+
+    return tabCaptures.filter((capture) => {
+      if (!showBrowserTraffic && capture.source === 'browser') return false
+      if (appBrowserOnly && showBrowserTraffic && capture.source !== 'browser') return false
       if (resourceFilter !== 'all' && classifyResource(capture) !== resourceFilter) return false
       const domain = domainFromCapture(capture)
       if (selectedDomains.size > 0 && !selectedDomains.has(domain)) return false
@@ -401,15 +410,21 @@ export default function App(): JSX.Element {
 
   const availableDomains = useMemo(() => {
     const counts = new Map<string, number>()
-    const sourceFiltered = showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser')
-    for (const capture of sourceFiltered) {
+    let baseCaptures = showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser')
+    if (showFilterPanel && appBrowserOnly) {
+      baseCaptures = baseCaptures.filter((capture) => capture.source === 'browser')
+    }
+    if (showFilterPanel && resourceFilter !== 'all') {
+      baseCaptures = baseCaptures.filter((capture) => classifyResource(capture) === resourceFilter)
+    }
+    for (const capture of baseCaptures) {
       const domain = domainFromCapture(capture)
       counts.set(domain, (counts.get(domain) || 0) + 1)
     }
     return Array.from(counts.entries())
       .map(([domain, count]) => ({ domain, count }))
       .sort((left, right) => left.domain.localeCompare(right.domain))
-  }, [showBrowserTraffic, tabCaptures])
+  }, [appBrowserOnly, resourceFilter, showBrowserTraffic, showFilterPanel, tabCaptures])
 
   const selectedCollection = useMemo(() => {
     return collections.find((collection) => collection.id === selectedCollectionId) || collections[0]
@@ -452,6 +467,12 @@ export default function App(): JSX.Element {
     if (selected) return
     setSelectedId(filteredCaptures[0]?.id)
   }, [filteredCaptures, selected])
+
+  useEffect(() => {
+    if (!selected) return
+    const availableTabs = detailTabsForCapture(selected)
+    if (!availableTabs.includes(tab)) setTab(availableTabs[0])
+  }, [selected, tab])
 
   useEffect(() => {
     const element = captureTableRef.current
@@ -749,6 +770,22 @@ export default function App(): JSX.Element {
     setMessage(enabled ? 'Theme hot reload enabled.' : 'Theme hot reload disabled.')
   }
 
+  async function togglePlugin(name: string): Promise<void> {
+    const plugin = plugins.find(p => p.name === name)
+    if (!plugin) return
+    
+    if (plugin.enabled) {
+      await window.steal.disablePlugin(name)
+      setMessage(`Plugin ${name} disabled.`)
+    } else {
+      await window.steal.enablePlugin(name)
+      setMessage(`Plugin ${name} enabled.`)
+    }
+    
+    const updatedPlugins = await window.steal.listPlugins()
+    setPlugins(updatedPlugins)
+  }
+
   async function installCertificate(): Promise<void> {
     setCertificateInstalling(true)
     setMessage('')
@@ -781,12 +818,10 @@ export default function App(): JSX.Element {
   }
 
   function toggleDomain(domain: string): void {
-    setSelectedDomains((current) => {
-      const next = new Set(current)
-      if (next.has(domain)) next.delete(domain)
-      else next.add(domain)
-      return next
-    })
+    const next = new Set(selectedDomains)
+    if (next.has(domain)) next.delete(domain)
+    else next.add(domain)
+    setSelectedDomains(next)
   }
 
   function clearFilters(): void {
@@ -1207,6 +1242,7 @@ export default function App(): JSX.Element {
                           placeholder="URL, headers, body, response"
                           onChange={(event) => setQuery(event.target.value)}
                         />
+                        {query && <span className="search-match-count">{filteredCaptures.length}</span>}
                       </label>
                     </div>
                     <div className="filter-panel-section">
@@ -1263,7 +1299,7 @@ export default function App(): JSX.Element {
                         >
                           <span className={`method ${capture.method.toLowerCase()}`}>{capture.method}</span>
                           <img className="capture-favicon" src={faviconUrl(capture.url)} alt="" loading="lazy" />
-                          <span className="url-cell">{capture.url}</span>
+                          <span className="url-cell">{highlightText(capture.url, searchTokens(query))}</span>
                           <span>{capture.responseStatusCode || '-'}</span>
                           <span>{capture.durationMs}ms</span>
                           <span>{formatBytes(capture.responseSize)}</span>
@@ -1292,7 +1328,7 @@ export default function App(): JSX.Element {
                   <strong>{selected.url}</strong>
                 </div>
                 <div className="tabs">
-                  {(['headers', 'body', 'response'] as DetailTab[]).map((item) => (
+                  {detailTabsForCapture(selected).map((item) => (
                     <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>
                   ))}
                   <label className="detail-search">
@@ -1333,6 +1369,9 @@ export default function App(): JSX.Element {
                     contentType={selected.responseHeaders['content-type']}
                     searchQuery={detailSearch}
                   />
+                )}
+                {tab === 'messages' && (
+                  <WebSocketMessagesViewer messages={selected.webSocketMessages || []} searchQuery={detailSearch} />
                 )}
               </>
             ) : (
@@ -1648,6 +1687,9 @@ export default function App(): JSX.Element {
             <button className={settingsCategory === 'theme' ? 'settings-category active' : 'settings-category'} onClick={() => setSettingsCategory('theme')}>
               <strong>Theme</strong>
             </button>
+            <button className={settingsCategory === 'plugins' ? 'settings-category active' : 'settings-category'} onClick={() => setSettingsCategory('plugins')}>
+              <strong>Plugins</strong>
+            </button>
           </aside>
 
           <section className="settings-page">
@@ -1779,6 +1821,40 @@ export default function App(): JSX.Element {
                     </button>
                   ))}
                 </div>
+              </>
+            )}
+            
+            {settingsCategory === 'plugins' && (
+              <>
+                <div className="settings-page-title">
+                  <strong>Plugins</strong>
+                  <span>Manage loaded plugins. Place plugin files in the plugins directory to load them automatically.</span>
+                </div>
+                
+                {plugins.length === 0 ? (
+                  <div className="setting-card">
+                    <div>
+                      <strong>No plugins loaded</strong>
+                      <span>Place .js plugin files in ~/Library/Application Support/steal/steal-plugins/ directory.</span>
+                    </div>
+                  </div>
+                ) : (
+                  plugins.map((plugin) => (
+                    <div key={plugin.name} className="setting-card">
+                      <div>
+                        <strong>{plugin.name}</strong>
+                        <span>{plugin.description || 'No description'}</span>
+                        {plugin.author && <code>by {plugin.author}</code>}
+                      </div>
+                      <button
+                        className={plugin.enabled ? 'system-proxy-toggle active' : 'system-proxy-toggle'}
+                        onClick={() => void togglePlugin(plugin.name)}
+                      >
+                        {plugin.enabled ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+                  ))
+                )}
               </>
             )}
           </section>
@@ -2229,6 +2305,42 @@ function MetricsPanel({ result }: { result: ReplayResult }): JSX.Element {
   )
 }
 
+function WebSocketMessagesViewer({
+  messages,
+  searchQuery
+}: {
+  messages: CapturedExchange['webSocketMessages']
+  searchQuery: string
+}): JSX.Element {
+  if (!messages || messages.length === 0) {
+    return <div className="empty-state compact">No WebSocket frames yet.</div>
+  }
+
+  return (
+    <div className="ws-messages">
+      {messages.map((message) => (
+        <section key={message.id} className="ws-message-card">
+          <div className="ws-message-meta">
+            <span className={`ws-direction ${message.direction}`}>{message.direction === 'incoming' ? 'IN' : 'OUT'}</span>
+            <strong>{message.type}</strong>
+            <span>{message.size} B</span>
+            <span>{new Date(message.timestamp).toLocaleTimeString()}</span>
+          </div>
+          {message.base64 ? (
+            <BinaryViewer
+              base64={message.base64}
+              fallbackLabel={message.text}
+              searchQuery={searchQuery}
+            />
+          ) : (
+            <CodeBlock value={formatBodyForDisplay(message.text)} language={languageFromBody(message.text)} searchQuery={searchQuery} />
+          )}
+        </section>
+      ))}
+    </div>
+  )
+}
+
 function CaptureTabIcon({ kind }: { kind: CaptureTabKind }): JSX.Element {
   if (kind === 'snapshot') return <Clock3 size={15} />
   if (kind === 'har') return <FileDown size={15} />
@@ -2632,6 +2744,11 @@ function headersView(capture: CapturedExchange): string {
 }
 
 function detailSearchText(exchange: CapturedExchange, tab: DetailTab, headerMode: HeaderMode): string {
+  if (tab === 'messages') {
+    return (exchange.webSocketMessages || [])
+      .map((message) => [message.direction, message.type, message.text, message.size, message.timestamp].join('\n'))
+      .join('\n\n')
+  }
   if (tab === 'headers') return headerMode === 'raw' ? headersView(exchange) : [
     exchange.method,
     exchange.url,
@@ -2657,6 +2774,18 @@ function bodySearchText(value: string, base64?: string): string {
     value,
     ...rows.map((row) => `${row.offset} ${row.hex} ${row.ascii}`)
   ].join('\n')
+}
+
+function detailTabsForCapture(capture: CapturedExchange): DetailTab[] {
+  return capture.isWebSocket ? ['headers', 'messages', 'body', 'response'] : ['headers', 'body', 'response']
+}
+
+function upsertCaptureList(current: CapturedExchange[], capture: CapturedExchange): CapturedExchange[] {
+  const index = current.findIndex((item) => item.id === capture.id)
+  if (index === -1) return [capture, ...current]
+  const next = [...current]
+  next[index] = capture
+  return next
 }
 
 function countOccurrences(value: string, query: string): number {
@@ -2898,6 +3027,52 @@ function searchTokens(value: string): string[] {
     .split(/\s+/)
     .map((token) => token.trim())
     .filter(Boolean)
+}
+
+function highlightText(text: string, tokens: string[]): React.ReactNode {
+  if (tokens.length === 0) return text
+
+  const lowerText = text.toLowerCase()
+  const matches: Array<{ start: number; end: number }> = []
+
+  for (const token of tokens) {
+    let index = 0
+    while (true) {
+      const pos = lowerText.indexOf(token, index)
+      if (pos === -1) break
+      matches.push({ start: pos, end: pos + token.length })
+      index = pos + 1
+    }
+  }
+
+  if (matches.length === 0) return text
+
+  matches.sort((a, b) => a.start - b.start)
+
+  const merged: Array<{ start: number; end: number }> = []
+  for (const match of matches) {
+    if (merged.length === 0 || merged[merged.length - 1].end < match.start) {
+      merged.push(match)
+    } else {
+      merged[merged.length - 1].end = Math.max(merged[merged.length - 1].end, match.end)
+    }
+  }
+
+  const result: React.ReactNode[] = []
+  let lastEnd = 0
+  for (let i = 0; i < merged.length; i++) {
+    const match = merged[i]
+    if (match.start > lastEnd) {
+      result.push(text.slice(lastEnd, match.start))
+    }
+    result.push(<mark key={i}>{text.slice(match.start, match.end)}</mark>)
+    lastEnd = match.end
+  }
+  if (lastEnd < text.length) {
+    result.push(text.slice(lastEnd))
+  }
+
+  return result
 }
 
 function normalizeSearchText(value: string): string {

@@ -10,13 +10,17 @@ import { ThemeStore } from './theme-store'
 import { capturesFromHar, capturesToHar } from './har'
 import { disableStealSystemProxy, enableSystemProxy, installTrustedCertificate, isCertificateTrusted, restoreSystemProxy } from './system-proxy'
 import { decodeBody } from './body-decode'
+import { PluginLoader } from './plugin-loader'
+import { PluginAPI } from './plugin-api'
 import type { AppTheme, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi } from '../shared/types'
+import type { StealPlugin } from '../shared/plugin-types'
 
 let mainWindow: BrowserWindow | undefined
 let proxyService: ProxyService
 let savedApiStore: SavedApiStore
 let settingsStore: SettingsStore
 let themeStore: ThemeStore
+let pluginLoader: PluginLoader
 let certificatePromptInFlight = false
 let tray: Tray | undefined
 let trayProxyTransitioning = false
@@ -74,6 +78,10 @@ app.whenReady().then(async () => {
   settingsStore = new SettingsStore(join(dataDir, 'settings.json'))
   themeStore = new ThemeStore(join(dataDir, 'theme.json'))
   const settings = await settingsStore.get()
+
+  const pluginAPI = new PluginAPI(proxyService)
+  pluginLoader = new PluginLoader(pluginAPI)
+  await pluginLoader.loadAllPlugins()
 
   registerIpc()
   wireProxyEvents()
@@ -254,6 +262,92 @@ function registerIpc(): void {
     BrowserWindow.fromWebContents(event.sender)?.close()
   })
   ipcMain.handle('browser:launch-chrome', (_event, url: string) => launchChromeBrowser(url))
+  
+  ipcMain.handle('plugins:list', () => {
+    return pluginLoader.getPlugins().map(p => ({
+      name: p.name,
+      version: p.version,
+      description: p.description,
+      author: p.author,
+      enabled: p.enabled ?? true
+    }))
+  })
+  
+  ipcMain.handle('plugins:enable', (_event, name: string) => {
+    pluginLoader.enablePlugin(name)
+  })
+  
+  ipcMain.handle('plugins:disable', (_event, name: string) => {
+    pluginLoader.disablePlugin(name)
+  })
+  
+  ipcMain.handle('plugins:load', async (_event, path: string) => {
+    const plugin = await pluginLoader.loadPlugin(path)
+    return {
+      name: plugin.name,
+      version: plugin.version,
+      description: plugin.description,
+      author: plugin.author,
+      enabled: plugin.enabled ?? true
+    }
+  })
+  
+  ipcMain.handle('plugins:get-filters', () => {
+    const filters: Array<{ name: string; pluginName: string }> = []
+    for (const plugin of pluginLoader.getPlugins()) {
+      if (!plugin.enabled || !plugin.filters) continue
+      for (const filterName of Object.keys(plugin.filters)) {
+        filters.push({ name: filterName, pluginName: plugin.name })
+      }
+    }
+    return filters
+  })
+  
+  ipcMain.handle('plugins:get-exporters', () => {
+    const exporters: Array<{ name: string; pluginName: string }> = []
+    for (const plugin of pluginLoader.getPlugins()) {
+      if (!plugin.enabled || !plugin.exporters) continue
+      for (const exporterName of Object.keys(plugin.exporters)) {
+        exporters.push({ name: exporterName, pluginName: plugin.name })
+      }
+    }
+    return exporters
+  })
+  
+  ipcMain.handle('plugins:run-filter', (_event, pluginName: string, filterName: string, captures: CapturedExchange[]) => {
+    const plugin = pluginLoader.getPlugin(pluginName)
+    if (!plugin || !plugin.enabled || !plugin.filters) return captures
+    const filter = plugin.filters[filterName]
+    if (!filter) return captures
+    return captures.filter(filter)
+  })
+  
+  ipcMain.handle('plugins:run-export', async (_event, pluginName: string, exporterName: string, captures: CapturedExchange[]) => {
+    const plugin = pluginLoader.getPlugin(pluginName)
+    if (!plugin || !plugin.enabled || !plugin.exporters) throw new Error('Plugin or exporter not found')
+    const exporter = plugin.exporters[exporterName]
+    if (!exporter) throw new Error('Exporter not found')
+    const result = exporter(captures)
+    
+    const { canceled, filePath } = await dialog.showSaveDialog({
+      title: `Export with ${exporterName}`,
+      defaultPath: `export-${Date.now()}`,
+      filters: [{ name: 'File', extensions: ['txt', 'md', 'json'] }]
+    })
+    if (canceled || !filePath) return undefined
+    
+    await writeFile(filePath, typeof result === 'string' ? result : result)
+    return filePath
+  })
+  
+  ipcMain.handle('plugins:process-request', (_event, request: ReplayRequest) => {
+    let processed = request
+    for (const plugin of pluginLoader.getPlugins()) {
+      if (!plugin.enabled || !plugin.processors?.onRequest) continue
+      processed = plugin.processors.onRequest(processed)
+    }
+    return processed
+  })
 }
 
 async function setThemeHotReload(enabled: boolean): Promise<void> {

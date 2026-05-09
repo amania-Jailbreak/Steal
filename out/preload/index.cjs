@@ -50,6 +50,15 @@ const api = {
     const listener = (_event, theme) => callback(theme);
     electron.ipcRenderer.on("theme:changed", listener);
     return () => electron.ipcRenderer.removeListener("theme:changed", listener);
-  }
+  },
+  listPlugins: () => electron.ipcRenderer.invoke("plugins:list"),
+  enablePlugin: (name) => electron.ipcRenderer.invoke("plugins:enable", name),
+  disablePlugin: (name) => electron.ipcRenderer.invoke("plugins:disable", name),
+  loadPlugin: (path) => electron.ipcRenderer.invoke("plugins:load", path),
+  getPluginFilters: () => electron.ipcRenderer.invoke("plugins:get-filters"),
+  getPluginExporters: () => electron.ipcRenderer.invoke("plugins:get-exporters"),
+  runPluginFilter: (pluginName, filterName, captures) => electron.ipcRenderer.invoke("plugins:run-filter", pluginName, filterName, captures),
+  runPluginExport: (pluginName, exporterName, captures) => electron.ipcRenderer.invoke("plugins:run-export", pluginName, exporterName, captures),
+  processRequest: (request) => electron.ipcRenderer.invoke("plugins:process-request", request)
 };
 electron.contextBridge.exposeInMainWorld("steal", api);
