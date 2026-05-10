@@ -7,12 +7,15 @@ import { ProxyService } from './proxy-service'
 import { SettingsStore } from './settings-store'
 import { SavedApiStore } from './storage'
 import { ThemeStore } from './theme-store'
+import { WorkspaceStore } from './workspace-store'
 import { capturesFromHar, capturesToHar } from './har'
 import { disableStealSystemProxy, enableSystemProxy, installTrustedCertificate, isCertificateTrusted, restoreSystemProxy } from './system-proxy'
-import { decodeBody } from './body-decode'
 import { PluginLoader } from './plugin-loader'
 import { PluginAPI } from './plugin-api'
-import type { AppTheme, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi } from '../shared/types'
+import { replayRequest } from './replay'
+import { McpBridgeServer } from './mcp-bridge'
+import { resolveStealBridgeFilePath } from './app-data'
+import type { AppSettings, AppTheme, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, WorkspaceCaptureTab } from '../shared/types'
 import type { StealPlugin } from '../shared/plugin-types'
 
 let mainWindow: BrowserWindow | undefined
@@ -20,6 +23,7 @@ let proxyService: ProxyService
 let savedApiStore: SavedApiStore
 let settingsStore: SettingsStore
 let themeStore: ThemeStore
+let workspaceStore: WorkspaceStore
 let pluginLoader: PluginLoader
 let certificatePromptInFlight = false
 let tray: Tray | undefined
@@ -29,6 +33,8 @@ let quitCleanupComplete = false
 let themeHotReloadEnabled = false
 let themeWatcher: FSWatcher | undefined
 let themeReloadTimer: NodeJS.Timeout | undefined
+let sharedCaptureSyncTimer: NodeJS.Timeout | undefined
+let mcpBridgeServer: McpBridgeServer | undefined
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
 
@@ -61,8 +67,8 @@ function createWindow(): void {
     console.error('Renderer failed to load', { errorCode, errorDescription, validatedURL })
   })
 
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    console.log(`renderer[${level}] ${message} (${sourceId}:${line})`)
+  mainWindow.webContents.on('console-message', (_event, details: any) => {
+    console.log(`renderer[${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`)
   })
 
   mainWindow.on('closed', () => {
@@ -74,17 +80,23 @@ app.whenReady().then(async () => {
   const dataDir = join(app.getPath('userData'), 'steal-data')
   mkdirSync(dataDir, { recursive: true })
   proxyService = new ProxyService(dataDir)
+  await proxyService.hydrateSharedCaptures()
   savedApiStore = new SavedApiStore(join(dataDir, 'collections'))
   settingsStore = new SettingsStore(join(dataDir, 'settings.json'))
   themeStore = new ThemeStore(join(dataDir, 'theme.json'))
+  workspaceStore = new WorkspaceStore(join(dataDir, 'workspaces'))
   const settings = await settingsStore.get()
 
   const pluginAPI = new PluginAPI(proxyService)
   pluginLoader = new PluginLoader(pluginAPI)
   await pluginLoader.loadAllPlugins()
 
+  mcpBridgeServer = new McpBridgeServer(resolveStealBridgeFilePath(dataDir))
+  registerMcpBridge()
+  await mcpBridgeServer.start()
   registerIpc()
   wireProxyEvents()
+  startSharedCaptureSync()
   await configureCaptureSession()
   createWindow()
   createTray()
@@ -139,10 +151,22 @@ function wireProxyEvents(): void {
   proxyService.on('capture', (exchange) => {
     mainWindow?.webContents.send('captures:new', exchange)
   })
+  proxyService.on('captures', (captures) => {
+    mainWindow?.webContents.send('captures:changed', captures)
+  })
   proxyService.on('status', (status) => {
     mainWindow?.webContents.send('proxy:changed', status)
     updateTray(status)
   })
+}
+
+function startSharedCaptureSync(): void {
+  clearInterval(sharedCaptureSyncTimer)
+  sharedCaptureSyncTimer = setInterval(() => {
+    void proxyService.syncSharedCaptures().catch((error: Error) => {
+      console.error('Failed to sync shared captures', error)
+    })
+  }, 1200)
 }
 
 function registerIpc(): void {
@@ -164,6 +188,12 @@ function registerIpc(): void {
   ipcMain.handle('clipboard:write-text', (_event, text: string) => {
     clipboard.writeText(text)
   })
+  ipcMain.handle('workspaces:state', () => workspaceStore.getState())
+  ipcMain.handle('workspaces:load', (_event, workspaceId: string) => workspaceStore.load(workspaceId))
+  ipcMain.handle('workspaces:save', (_event, payload: { workspaceId?: string; name: string; tabs: WorkspaceCaptureTab[]; activeCaptureTabId: string }) => {
+    return workspaceStore.save(payload)
+  })
+  ipcMain.handle('workspaces:delete', (_event, workspaceId: string) => workspaceStore.delete(workspaceId))
   ipcMain.handle('proxy:status', () => proxyService.getStatus())
   ipcMain.handle('proxy:start', () => startProxyWithSystemSetup())
   ipcMain.handle('proxy:stop', () => stopProxyWithSystemRestore())
@@ -350,6 +380,48 @@ function registerIpc(): void {
   })
 }
 
+function registerMcpBridge(): void {
+  if (!mcpBridgeServer) return
+
+  mcpBridgeServer.register('getProxyStatus', () => proxyService.getStatus())
+  mcpBridgeServer.register('startProxy', () => startProxyWithSystemSetup())
+  mcpBridgeServer.register('stopProxy', () => stopProxyWithSystemRestore())
+  mcpBridgeServer.register('setCapturePaused', (params) => proxyService.setCapturePaused(Boolean((params as { paused?: boolean } | undefined)?.paused)))
+  mcpBridgeServer.register('clearCaptures', () => {
+    proxyService.clearCaptures()
+    return { cleared: true }
+  })
+  mcpBridgeServer.register('listCaptures', () => proxyService.getCaptures())
+  mcpBridgeServer.register('getCapture', (params) => {
+    const id = String((params as { id?: string } | undefined)?.id || '')
+    const capture = proxyService.findCapture(id)
+    if (!capture) throw new Error(`Capture not found: ${id}`)
+    return capture
+  })
+  mcpBridgeServer.register('getSettings', () => settingsStore.get())
+  mcpBridgeServer.register('updateSettings', (params) => settingsStore.update((params as Partial<AppSettings>) || {}))
+  mcpBridgeServer.register('listWorkspaces', () => workspaceStore.getState())
+  mcpBridgeServer.register('loadWorkspace', (params) => {
+    const workspaceId = String((params as { workspaceId?: string } | undefined)?.workspaceId || '')
+    return workspaceStore.load(workspaceId)
+  })
+  mcpBridgeServer.register('listCollections', () => savedApiStore.listCollections())
+  mcpBridgeServer.register('listSavedApis', () => savedApiStore.list())
+  mcpBridgeServer.register('getSavedApi', async (params) => {
+    const id = String((params as { id?: string } | undefined)?.id || '')
+    const api = (await savedApiStore.list()).find((item) => item.id === id)
+    if (!api) throw new Error(`Saved API not found: ${id}`)
+    return api
+  })
+  mcpBridgeServer.register('saveCaptureToCollection', async (params) => {
+    const payload = (params || {}) as { exchangeId?: string; name?: string; tags?: string[]; collectionName?: string }
+    const exchangeId = String(payload.exchangeId || '')
+    const capture = proxyService.findCapture(exchangeId)
+    if (!capture) throw new Error(`Capture not found: ${exchangeId}`)
+    return savedApiStore.save(capture, payload.name || '', payload.tags || [], payload.collectionName?.trim() || 'Default')
+  })
+}
+
 async function setThemeHotReload(enabled: boolean): Promise<void> {
   themeHotReloadEnabled = enabled
   themeWatcher?.close()
@@ -417,6 +489,8 @@ async function removeSystemProxyFromSystem(): Promise<void> {
 }
 
 async function cleanupBeforeQuit(): Promise<void> {
+  clearInterval(sharedCaptureSyncTimer)
+  await mcpBridgeServer?.stop().catch(() => undefined)
   if (!proxyService) {
     await restoreSystemProxy().catch(() => undefined)
     return
@@ -534,25 +608,7 @@ async function getCertificateStatus(): Promise<CertificateStatus> {
 }
 
 async function replay(request: ReplayRequest): Promise<ReplayResult> {
-  const startedAt = performance.now()
-  const headers = Object.fromEntries(Object.entries(request.headers).filter(([, value]) => value.trim() !== ''))
-  const response = await fetch(request.url, {
-    method: request.method,
-    headers,
-    body: ['GET', 'HEAD'].includes(request.method.toUpperCase()) ? undefined : request.body
-  })
-  const responseBuffer = Buffer.from(await response.arrayBuffer())
-  const responseHeaders = Object.fromEntries(response.headers.entries())
-  const body = decodeBody(responseBuffer, responseHeaders)
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers: responseHeaders,
-    body: body.text,
-    bodyBase64: body.base64,
-    durationMs: Math.round(performance.now() - startedAt),
-    size: responseBuffer.byteLength
-  }
+  return replayRequest(request)
 }
 
 async function launchChromeBrowser(url: string): Promise<void> {

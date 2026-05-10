@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AppApi, AppSettings, AppTheme, CapturedExchange, CollectionSettings, ProxyStatus, ReplayRequest } from '../shared/types'
+import type { AppApi, AppSettings, AppTheme, CapturedExchange, CollectionSettings, ProxyStatus, ReplayRequest, WorkspaceCaptureTab } from '../shared/types'
 
 const api: AppApi = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -36,6 +36,10 @@ const api: AppApi = {
   getThemeHotReload: () => ipcRenderer.invoke('theme:hot-reload:get'),
   setThemeHotReload: (enabled: boolean) => ipcRenderer.invoke('theme:hot-reload:set', enabled),
   getAppPlatform: () => ipcRenderer.invoke('app:platform'),
+  getWorkspaceState: () => ipcRenderer.invoke('workspaces:state'),
+  loadWorkspace: (workspaceId: string) => ipcRenderer.invoke('workspaces:load', workspaceId),
+  saveWorkspace: (payload: { workspaceId?: string; name: string; tabs: WorkspaceCaptureTab[]; activeCaptureTabId: string }) => ipcRenderer.invoke('workspaces:save', payload),
+  deleteWorkspace: (workspaceId: string) => ipcRenderer.invoke('workspaces:delete', workspaceId),
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggle-maximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
@@ -43,6 +47,11 @@ const api: AppApi = {
     const listener = (_event: Electron.IpcRendererEvent, exchange: CapturedExchange): void => callback(exchange)
     ipcRenderer.on('captures:new', listener)
     return () => ipcRenderer.removeListener('captures:new', listener)
+  },
+  onCapturesChanged: (callback: (captures: CapturedExchange[]) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, captures: CapturedExchange[]): void => callback(captures)
+    ipcRenderer.on('captures:changed', listener)
+    return () => ipcRenderer.removeListener('captures:changed', listener)
   },
   onProxyStatus: (callback: (status: ProxyStatus) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: ProxyStatus): void => callback(status)

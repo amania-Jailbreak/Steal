@@ -145,6 +145,43 @@ export interface AppSettings {
   systemProxyEnabled: boolean
   autoShowBrowser: boolean
   browserMode: BrowserMode
+  autoOpenLastWorkspace: boolean
+}
+
+export type WorkspaceCaptureTabKind = 'live' | 'live-view' | 'snapshot' | 'har'
+
+export interface WorkspaceCaptureFilters {
+  query: string
+  showFilterPanel: boolean
+  appBrowserOnly: boolean
+  resourceFilter: 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
+  selectedDomains: string[]
+}
+
+export interface WorkspaceCaptureTab {
+  id: string
+  title: string
+  kind: WorkspaceCaptureTabKind
+  filters: WorkspaceCaptureFilters
+  captures?: CapturedExchange[]
+}
+
+export interface WorkspaceRecord {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  lastOpenedAt?: string
+}
+
+export interface WorkspaceSnapshot extends WorkspaceRecord {
+  tabs: WorkspaceCaptureTab[]
+  activeCaptureTabId: string
+}
+
+export interface WorkspaceState {
+  workspaces: WorkspaceRecord[]
+  lastWorkspaceId?: string
 }
 
 export interface AppApi {
@@ -180,10 +217,15 @@ export interface AppApi {
   getThemeHotReload: () => Promise<boolean>
   setThemeHotReload: (enabled: boolean) => Promise<boolean>
   getAppPlatform: () => Promise<AppPlatform>
+  getWorkspaceState: () => Promise<WorkspaceState>
+  loadWorkspace: (workspaceId: string) => Promise<WorkspaceSnapshot>
+  saveWorkspace: (payload: { workspaceId?: string; name: string; tabs: WorkspaceCaptureTab[]; activeCaptureTabId: string }) => Promise<WorkspaceSnapshot>
+  deleteWorkspace: (workspaceId: string) => Promise<WorkspaceState>
   minimizeWindow: () => Promise<void>
   toggleMaximizeWindow: () => Promise<boolean>
   closeWindow: () => Promise<void>
   onCapture: (callback: (exchange: CapturedExchange) => void) => () => void
+  onCapturesChanged: (callback: (captures: CapturedExchange[]) => void) => () => void
   onProxyStatus: (callback: (status: ProxyStatus) => void) => () => void
   onThemeChanged: (callback: (theme: AppTheme) => void) => () => void
   

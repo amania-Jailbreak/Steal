@@ -33,6 +33,10 @@ const api = {
   getThemeHotReload: () => electron.ipcRenderer.invoke("theme:hot-reload:get"),
   setThemeHotReload: (enabled) => electron.ipcRenderer.invoke("theme:hot-reload:set", enabled),
   getAppPlatform: () => electron.ipcRenderer.invoke("app:platform"),
+  getWorkspaceState: () => electron.ipcRenderer.invoke("workspaces:state"),
+  loadWorkspace: (workspaceId) => electron.ipcRenderer.invoke("workspaces:load", workspaceId),
+  saveWorkspace: (payload) => electron.ipcRenderer.invoke("workspaces:save", payload),
+  deleteWorkspace: (workspaceId) => electron.ipcRenderer.invoke("workspaces:delete", workspaceId),
   minimizeWindow: () => electron.ipcRenderer.invoke("window:minimize"),
   toggleMaximizeWindow: () => electron.ipcRenderer.invoke("window:toggle-maximize"),
   closeWindow: () => electron.ipcRenderer.invoke("window:close"),
@@ -40,6 +44,11 @@ const api = {
     const listener = (_event, exchange) => callback(exchange);
     electron.ipcRenderer.on("captures:new", listener);
     return () => electron.ipcRenderer.removeListener("captures:new", listener);
+  },
+  onCapturesChanged: (callback) => {
+    const listener = (_event, captures) => callback(captures);
+    electron.ipcRenderer.on("captures:changed", listener);
+    return () => electron.ipcRenderer.removeListener("captures:changed", listener);
   },
   onProxyStatus: (callback) => {
     const listener = (_event, status) => callback(status);

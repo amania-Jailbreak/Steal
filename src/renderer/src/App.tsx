@@ -5,11 +5,11 @@ import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import xml from 'highlight.js/lib/languages/xml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
-import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Clock3, Eye, EyeOff, FileDown, FileUp, Folder, FolderOpen, Funnel, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RadioTower, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
-import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection } from '../../shared/types'
+import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Clock3, Eye, EyeOff, FileDown, FilePlus2, FileUp, Folder, FolderOpen, Funnel, History, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RadioTower, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
+import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection, WorkspaceCaptureTab, WorkspaceRecord, WorkspaceSnapshot, WorkspaceState } from '../../shared/types'
 import './styles.css'
 
-type AppMode = 'capture' | 'collection' | 'settings'
+type AppMode = 'start' | 'capture' | 'collection' | 'settings'
 type DetailTab = 'headers' | 'body' | 'response' | 'messages'
 type HeaderMode = 'table' | 'raw'
 type CodeLanguage = 'json' | 'javascript' | 'xml' | 'plaintext'
@@ -30,7 +30,7 @@ type CaptureFilters = {
   resourceFilter: ResourceFilter
   selectedDomains: string[]
 }
-type CaptureTabKind = 'live' | 'live-view' | 'snapshot' | 'har'
+type CaptureTabKind = WorkspaceCaptureTab['kind']
 type CaptureTab = {
   id: string
   title: string
@@ -38,6 +38,7 @@ type CaptureTab = {
   filters: CaptureFilters
   captures?: CapturedExchange[]
 }
+type SaveWorkspaceState = { workspaceId?: string; name: string }
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('json', json)
@@ -184,6 +185,10 @@ export default function App(): JSX.Element {
   const [captures, setCaptures] = useState<CapturedExchange[]>([])
   const [collections, setCollections] = useState<SavedCollection[]>([])
   const [savedApis, setSavedApis] = useState<SavedApi[]>([])
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([])
+  const [lastWorkspaceId, setLastWorkspaceId] = useState<string>()
+  const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string>()
+  const [currentWorkspaceName, setCurrentWorkspaceName] = useState<string>()
   const [selectedId, setSelectedId] = useState<string>()
   const [captureTabs, setCaptureTabs] = useState<CaptureTab[]>([liveCaptureTab])
   const [activeCaptureTabId, setActiveCaptureTabId] = useState('live')
@@ -193,7 +198,7 @@ export default function App(): JSX.Element {
   const [openSavedApiIds, setOpenSavedApiIds] = useState<string[]>([])
   const [draggingSavedApiId, setDraggingSavedApiId] = useState<string>()
   const [expandedCollectionIds, setExpandedCollectionIds] = useState<Set<string>>(new Set())
-  const [activeMode, setActiveMode] = useState<AppMode>('capture')
+  const [activeMode, setActiveMode] = useState<AppMode>('start')
   const [tab, setTab] = useState<DetailTab>('headers')
   const [headerMode, setHeaderMode] = useState<HeaderMode>('table')
   const [detailSearch, setDetailSearch] = useState('')
@@ -237,6 +242,9 @@ export default function App(): JSX.Element {
   const [certificateChecking, setCertificateChecking] = useState(false)
   const [message, setMessage] = useState('')
   const [focusHint, setFocusHint] = useState<FocusHint>()
+  const [startupReady, setStartupReady] = useState(false)
+  const [saveWorkspaceState, setSaveWorkspaceState] = useState<SaveWorkspaceState>()
+  const showBrowserTraffic = settings.browserMode === 'chrome' || showBrowser
 
   useEffect(() => {
     void refreshAll()
@@ -245,15 +253,23 @@ export default function App(): JSX.Element {
       setCaptures((current) => upsertCaptureList(current, capture))
       setSelectedId((current) => current || capture.id)
     })
+    const removeCapturesChanged = window.steal.onCapturesChanged((nextCaptures) => {
+      setCaptures(nextCaptures)
+      setSelectedId((current) => {
+        if (current && nextCaptures.some((capture) => capture.id === current)) return current
+        return nextCaptures.find((capture) => showBrowserTraffic || capture.source !== 'browser')?.id
+      })
+    })
     const removeStatus = window.steal.onProxyStatus((nextStatus) => {
       setStatus(nextStatus)
       void refreshCertificateStatus()
     })
     return () => {
       removeCapture()
+      removeCapturesChanged()
       removeStatus()
     }
-  }, [])
+  }, [showBrowserTraffic])
 
   useEffect(() => {
     let timer: number | undefined
@@ -325,16 +341,30 @@ export default function App(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    void window.steal.getSettings().then((nextSettings) => {
+    void (async () => {
+      const [nextSettings, nextTheme, nextThemePresets, hotReloadEnabled, workspaceState] = await Promise.all([
+        window.steal.getSettings(),
+        window.steal.getTheme(),
+        window.steal.listThemePresets(),
+        window.steal.getThemeHotReload(),
+        window.steal.getWorkspaceState()
+      ])
       setSettings(nextSettings)
       setShowBrowser(nextSettings.autoShowBrowser)
-    })
-    void window.steal.getTheme().then((nextTheme) => {
       setTheme(nextTheme)
       applyTheme(nextTheme)
-    })
-    void window.steal.listThemePresets().then(setThemePresets)
-    void window.steal.getThemeHotReload().then(setThemeHotReload)
+      setThemePresets(nextThemePresets)
+      setThemeHotReload(hotReloadEnabled)
+      applyWorkspaceState(workspaceState)
+      if (nextSettings.autoOpenLastWorkspace && workspaceState.lastWorkspaceId) {
+        await openWorkspace(workspaceState.lastWorkspaceId).catch(() => {
+          setActiveMode('start')
+        })
+      } else {
+        setActiveMode('start')
+      }
+      setStartupReady(true)
+    })()
     const removeThemeChanged = window.steal.onThemeChanged((nextTheme) => {
       setTheme(nextTheme)
       applyTheme(nextTheme)
@@ -359,7 +389,6 @@ export default function App(): JSX.Element {
   }, [proxyTransition, status.running])
 
   const embeddedBrowserVisible = showBrowser && settings.browserMode === 'embedded'
-  const showBrowserTraffic = settings.browserMode === 'chrome' || showBrowser
   const activeCaptureTab = useMemo(() => {
     return captureTabs.find((captureTab) => captureTab.id === activeCaptureTabId) || captureTabs[0] || liveCaptureTab
   }, [activeCaptureTabId, captureTabs])
@@ -555,6 +584,96 @@ export default function App(): JSX.Element {
     setSavedApis(nextSavedApis)
     setCertificateStatus(nextCertificateStatus)
     setSelectedId((current) => current || nextCaptures.find((capture) => showBrowserTraffic || capture.source !== 'browser')?.id)
+  }
+
+  function applyWorkspaceState(nextState: WorkspaceState): void {
+    setWorkspaces(nextState.workspaces)
+    setLastWorkspaceId(nextState.lastWorkspaceId)
+  }
+
+  function serializeCaptureTabsForWorkspace(): WorkspaceCaptureTab[] {
+    return captureTabs.map((captureTab) => ({
+      id: captureTab.id,
+      title: captureTab.title,
+      kind: captureTab.kind,
+      filters: {
+        query: captureTab.filters.query,
+        showFilterPanel: captureTab.filters.showFilterPanel,
+        appBrowserOnly: captureTab.filters.appBrowserOnly,
+        resourceFilter: captureTab.filters.resourceFilter,
+        selectedDomains: [...captureTab.filters.selectedDomains]
+      },
+      captures: captureTab.kind === 'live' || captureTab.kind === 'live-view' ? undefined : captureTab.captures
+    }))
+  }
+
+  function restoreWorkspace(snapshot: WorkspaceSnapshot): void {
+    setCaptureTabs(snapshot.tabs.map((captureTab) => ({
+      id: captureTab.id,
+      title: captureTab.title,
+      kind: captureTab.kind,
+      filters: {
+        query: captureTab.filters.query,
+        showFilterPanel: captureTab.filters.showFilterPanel,
+        appBrowserOnly: captureTab.filters.appBrowserOnly,
+        resourceFilter: captureTab.filters.resourceFilter,
+        selectedDomains: [...captureTab.filters.selectedDomains]
+      },
+      captures: captureTab.captures
+    })))
+    setActiveCaptureTabId(snapshot.activeCaptureTabId)
+    setCurrentWorkspaceId(snapshot.id)
+    setCurrentWorkspaceName(snapshot.name)
+    setActiveMode('capture')
+    setSelectedId(undefined)
+  }
+
+  function resetWorkspaceLayout(): void {
+    setCaptureTabs([liveCaptureTab])
+    setActiveCaptureTabId('live')
+    setCurrentWorkspaceId(undefined)
+    setCurrentWorkspaceName(undefined)
+    setSelectedId(undefined)
+  }
+
+  async function openWorkspace(workspaceId: string): Promise<void> {
+    const snapshot = await window.steal.loadWorkspace(workspaceId)
+    restoreWorkspace(snapshot)
+    const nextState = await window.steal.getWorkspaceState()
+    applyWorkspaceState(nextState)
+  }
+
+  function openWorkspaceSaveDialog(): void {
+    setSaveWorkspaceState({
+      workspaceId: currentWorkspaceId,
+      name: currentWorkspaceName || `Workspace ${new Date().toLocaleDateString()}`
+    })
+  }
+
+  async function saveWorkspace(): Promise<void> {
+    if (!saveWorkspaceState) return
+    const snapshot = await window.steal.saveWorkspace({
+      workspaceId: saveWorkspaceState.workspaceId,
+      name: saveWorkspaceState.name,
+      tabs: serializeCaptureTabsForWorkspace(),
+      activeCaptureTabId
+    })
+    setCurrentWorkspaceId(snapshot.id)
+    setCurrentWorkspaceName(snapshot.name)
+    setSaveWorkspaceState(undefined)
+    const nextState = await window.steal.getWorkspaceState()
+    applyWorkspaceState(nextState)
+    setMessage(`Saved workspace: ${snapshot.name}`)
+  }
+
+  async function deleteWorkspace(workspaceId: string): Promise<void> {
+    const nextState = await window.steal.deleteWorkspace(workspaceId)
+    applyWorkspaceState(nextState)
+    if (currentWorkspaceId === workspaceId) {
+      setCurrentWorkspaceId(undefined)
+      setCurrentWorkspaceName(undefined)
+      setActiveMode('start')
+    }
   }
 
   async function refreshCertificateStatus(): Promise<void> {
@@ -1050,6 +1169,16 @@ export default function App(): JSX.Element {
           )}
         </div>
         <div className="topbar-actions">
+          {activeMode !== 'start' && (
+            <>
+              <button title="Open workspaces" onClick={() => setActiveMode('start')}>
+                <Library size={16} />
+              </button>
+              <button title="Save workspace" onClick={openWorkspaceSaveDialog}>
+                <Save size={16} />
+              </button>
+            </>
+          )}
           <button
             className={status.running ? 'proxy-pill running' : 'proxy-pill'}
             onClick={toggleProxy}
@@ -1070,6 +1199,93 @@ export default function App(): JSX.Element {
           </button>
         </div>
       </header>
+
+      {startupReady && activeMode === 'start' && (
+        <section className="start-view">
+          <div className="start-content">
+            <section className="start-column start-primary">
+              <div className="start-primary-top">
+                <div className="start-heading">
+                  <div className="start-badge">
+                    <Activity size={15} />
+                    <span>Workspace Hub</span>
+                  </div>
+                  <strong>Steal</strong>
+                  <span>Capture traffic, organize sessions, and jump back into work without rebuilding your setup.</span>
+                </div>
+
+                <div className="start-section">
+                  <div className="start-section-header">
+                    <h2>Quick Actions</h2>
+                  </div>
+                  <div className="start-action-grid">
+                    <button
+                      className="start-action-card"
+                      onClick={() => {
+                        resetWorkspaceLayout()
+                        setActiveMode('capture')
+                      }}
+                    >
+                      <FilePlus2 size={18} />
+                      <div>
+                        <strong>New Workspace</strong>
+                        <span>Start from a clean live capture layout.</span>
+                      </div>
+                    </button>
+                    {lastWorkspaceId && (
+                      <button className="start-action-card" onClick={() => void openWorkspace(lastWorkspaceId)}>
+                        <History size={18} />
+                        <div>
+                          <strong>Open Last Workspace</strong>
+                          <span>Resume the most recent saved session.</span>
+                        </div>
+                      </button>
+                    )}
+                    <button className="start-action-card" onClick={openWorkspaceSaveDialog}>
+                      <Save size={18} />
+                      <div>
+                        <strong>Save Current Workspace</strong>
+                        <span>Store your current tab layout and filters.</span>
+                      </div>
+                    </button>
+                    <button className="start-action-card" onClick={() => setActiveMode('collection')}>
+                      <FolderOpen size={18} />
+                      <div>
+                        <strong>Open API Collection</strong>
+                        <span>Jump into saved requests and replay tools.</span>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="start-section">
+                <div className="start-section-header">
+                  <h2>Saved Workspaces</h2>
+                  <span>{workspaces.length}</span>
+                </div>
+                <div className="start-recent-list">
+                  {workspaces.map((workspace) => (
+                    <div key={workspace.id} className="start-recent-row">
+                      <button className="workspace-main" onClick={() => void openWorkspace(workspace.id)}>
+                        <strong>{workspace.name}</strong>
+                        <span>{new Date(workspace.updatedAt).toLocaleString()}</span>
+                      </button>
+                      <button title="Open workspace" onClick={() => void openWorkspace(workspace.id)}>
+                        <FolderOpen size={16} />
+                      </button>
+                      <button title="Delete workspace" onClick={() => void deleteWorkspace(workspace.id)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))}
+                  {workspaces.length === 0 && <div className="empty-state compact">No saved workspaces yet.</div>}
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      )}
 
       {activeMode === 'capture' && (
         <section
@@ -1749,6 +1965,12 @@ export default function App(): JSX.Element {
                   checked={settings.autoShowBrowser}
                   onChange={(checked) => void updateAppSettings({ autoShowBrowser: checked })}
                 />
+                <SettingToggle
+                  title="Open last workspace on launch"
+                  description="Automatically restores the most recently opened saved workspace when Steal starts."
+                  checked={settings.autoOpenLastWorkspace}
+                  onChange={(checked) => void updateAppSettings({ autoOpenLastWorkspace: checked })}
+                />
               </>
             )}
             {settingsCategory === 'browser' && (
@@ -1884,6 +2106,34 @@ export default function App(): JSX.Element {
             <div className="save-dialog-actions">
               <button onClick={() => setRenameCaptureTabTarget(undefined)}>Cancel</button>
               <button className="primary-action" onClick={renameCaptureTab}>Rename</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {saveWorkspaceState && (
+        <div className="modal-backdrop" onMouseDown={() => setSaveWorkspaceState(undefined)}>
+          <section className="save-dialog rename-tab-dialog" role="dialog" aria-modal="true" aria-labelledby="save-workspace-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="save-dialog-header">
+              <div>
+                <strong id="save-workspace-title">Save Workspace</strong>
+                <span>{currentWorkspaceName || 'Create a saved workspace from the current capture setup.'}</span>
+              </div>
+              <button title="Close" onClick={() => setSaveWorkspaceState(undefined)}><X size={16} /></button>
+            </div>
+            <div className="save-dialog-body">
+              <label>
+                <span>Name</span>
+                <input
+                  value={saveWorkspaceState.name}
+                  onChange={(event) => setSaveWorkspaceState((current) => current ? { ...current, name: event.target.value } : current)}
+                  autoFocus
+                />
+              </label>
+            </div>
+            <div className="save-dialog-actions">
+              <button onClick={() => setSaveWorkspaceState(undefined)}>Cancel</button>
+              <button className="primary-action" onClick={() => void saveWorkspace()}>Save Workspace</button>
             </div>
           </section>
         </div>
@@ -3119,12 +3369,14 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 function modeTitle(mode: AppMode): string {
+  if (mode === 'start') return 'Workspaces'
   if (mode === 'collection') return 'API Collection'
   if (mode === 'settings') return 'Setting'
   return 'Capture'
 }
 
 function modeSummary(mode: AppMode, filteredCount: number, captureCount: number, collectionCount: number, savedApiCount: number): string {
+  if (mode === 'start') return 'Resume, save, and reopen capture layouts'
   if (mode === 'collection') return `${collectionCount} collections / ${savedApiCount} APIs`
   if (mode === 'settings') return 'Proxy and certificate controls'
   return `${filteredCount} shown / ${captureCount} captured`

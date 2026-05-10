@@ -7,7 +7,8 @@ export const defaultSettings: AppSettings = {
   autoStartProxy: true,
   systemProxyEnabled: true,
   autoShowBrowser: true,
-  browserMode: 'embedded'
+  browserMode: 'embedded',
+  autoOpenLastWorkspace: true
 }
 
 export class SettingsStore {
@@ -42,6 +43,7 @@ function normalizeSettings(value: Partial<AppSettings>): AppSettings {
     autoStartProxy: typeof value.autoStartProxy === 'boolean' ? value.autoStartProxy : defaultSettings.autoStartProxy,
     systemProxyEnabled: typeof value.systemProxyEnabled === 'boolean' ? value.systemProxyEnabled : defaultSettings.systemProxyEnabled,
     autoShowBrowser: typeof value.autoShowBrowser === 'boolean' ? value.autoShowBrowser : defaultSettings.autoShowBrowser,
-    browserMode: value.browserMode === 'chrome' ? 'chrome' : 'embedded'
+    browserMode: value.browserMode === 'chrome' ? 'chrome' : 'embedded',
+    autoOpenLastWorkspace: typeof value.autoOpenLastWorkspace === 'boolean' ? value.autoOpenLastWorkspace : defaultSettings.autoOpenLastWorkspace
   }
 }

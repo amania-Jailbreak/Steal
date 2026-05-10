@@ -1,671 +1,21 @@
 import { app, dialog, BrowserWindow, session, ipcMain, shell, clipboard, Tray, Menu, nativeImage } from "electron";
 import { execFile } from "node:child_process";
-import { join, dirname } from "node:path";
-import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
 import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync, watch } from "node:fs";
-import { EventEmitter } from "node:events";
-import { isIP } from "node:net";
-import { Proxy } from "http-mitm-proxy";
-import { brotliDecompressSync, gunzipSync, inflateSync, inflateRawSync } from "node:zlib";
+import { P as ProxyService, S as SavedApiStore, a as SettingsStore, W as WorkspaceStore, M as McpBridgeServer, r as resolveStealBridgeFilePath, b as replayRequest } from "./chunks/mcp-bridge-DmR7Ft71.js";
 import { promisify } from "node:util";
+import "node:events";
+import "node:net";
+import "http-mitm-proxy";
+import "node:zlib";
+import "node:crypto";
+import "node:http";
+import "node:os";
 import __cjs_mod__ from "node:module";
 const __filename = import.meta.filename;
 const __dirname = import.meta.dirname;
 const require2 = __cjs_mod__.createRequire(import.meta.url);
-function decodeBody(buffer, headers) {
-  if (buffer.byteLength === 0) return { text: "" };
-  const contentType = headerToString$2(headers["content-type"]).toLowerCase();
-  const contentEncoding = headerToString$2(headers["content-encoding"]).toLowerCase();
-  const decoded = decodeContentEncoding(buffer, contentEncoding);
-  if (contentType && !isTextLikeContent(contentType) || !contentType && looksBinary(decoded)) {
-    return {
-      text: `[binary body: ${decoded.byteLength} bytes]`,
-      base64: decoded.toString("base64")
-    };
-  }
-  return { text: decodeText(decoded, contentType) };
-}
-function isTextLikeContent(contentType) {
-  return contentType.includes("application/json") || contentType.includes("text/") || contentType.includes("application/xml") || contentType.includes("application/javascript") || contentType.includes("application/x-www-form-urlencoded") || contentType.includes("graphql");
-}
-function decodeContentEncoding(buffer, contentEncoding) {
-  return contentEncoding.split(",").map((encoding) => encoding.trim()).filter(Boolean).reverse().reduce((current, encoding) => {
-    try {
-      if (encoding === "br") return brotliDecompressSync(current);
-      if (encoding === "gzip" || encoding === "x-gzip") return gunzipSync(current);
-      if (encoding === "deflate") {
-        try {
-          return inflateSync(current);
-        } catch {
-          return inflateRawSync(current);
-        }
-      }
-    } catch {
-      return current;
-    }
-    return current;
-  }, buffer);
-}
-function decodeText(buffer, contentType) {
-  const charset = extractCharset(contentType);
-  if (charset) {
-    try {
-      return new TextDecoder(charset, { fatal: false }).decode(buffer);
-    } catch {
-      return buffer.toString("utf8");
-    }
-  }
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-  } catch {
-    for (const candidate of ["shift_jis", "euc-jp", "iso-2022-jp"]) {
-      try {
-        return new TextDecoder(candidate, { fatal: false }).decode(buffer);
-      } catch {
-        continue;
-      }
-    }
-  }
-  return buffer.toString("utf8");
-}
-function looksBinary(buffer) {
-  if (buffer.byteLength === 0) return false;
-  const sampleLength = Math.min(buffer.byteLength, 4096);
-  let controlBytes = 0;
-  for (let index = 0; index < sampleLength; index += 1) {
-    const byte = buffer[index];
-    if (byte === 0) return true;
-    if (byte < 7 || byte > 13 && byte < 32) controlBytes += 1;
-  }
-  return controlBytes / sampleLength > 0.08;
-}
-function extractCharset(contentType) {
-  const match = /charset\s*=\s*"?([^";\s]+)"?/i.exec(contentType);
-  if (!match) return void 0;
-  const charset = match[1].toLowerCase();
-  if (charset === "shift-jis" || charset === "sjis" || charset === "windows-31j") return "shift_jis";
-  if (charset === "eucjp") return "euc-jp";
-  if (charset === "jis" || charset === "iso2022jp") return "iso-2022-jp";
-  return charset;
-}
-function headerToString$2(value) {
-  return Array.isArray(value) ? value[0] || "" : value || "";
-}
-const execFileAsync$1 = promisify(execFile);
-const cache = /* @__PURE__ */ new Map();
-const cacheTtlMs = 3e3;
-async function findClientProcess(clientPort, proxyPort) {
-  if (process.platform !== "darwin" || !clientPort) return {};
-  const key = `${clientPort}:${proxyPort}`;
-  const cached = cache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-  try {
-    const { stdout } = await execFileAsync$1("lsof", ["-nP", `-iTCP:${proxyPort}`, "-sTCP:ESTABLISHED"]);
-    const value = await resolveStealChrome(parseLsof(stdout, clientPort, proxyPort));
-    cache.set(key, { value, expiresAt: Date.now() + cacheTtlMs });
-    return value;
-  } catch {
-    return {};
-  }
-}
-function parseLsof(stdout, clientPort, proxyPort) {
-  const candidates = [];
-  for (const line of stdout.split("\n").slice(1)) {
-    const name = line.match(/\s+(.+?\(ESTABLISHED\))$/)?.[1] || "";
-    if (!name.includes(`:${clientPort}`) || !name.includes(`:${proxyPort}`)) continue;
-    const columns = line.trim().split(/\s+/);
-    const pid = Number(columns[1]);
-    const info = {
-      name: columns[0],
-      pid: Number.isFinite(pid) ? pid : void 0
-    };
-    if (name.includes(`:${clientPort}->`) && name.includes(`:${proxyPort}`)) return info;
-    candidates.push(info);
-  }
-  return candidates.find((candidate) => candidate.pid !== process.pid) || candidates[0] || {};
-}
-async function resolveStealChrome(info) {
-  if (!info.pid || process.platform !== "darwin") return info;
-  try {
-    const { stdout } = await execFileAsync$1("ps", ["-p", String(info.pid), "-o", "command="]);
-    return {
-      ...info,
-      isStealChrome: stdout.includes("steal-chrome-profile")
-    };
-  } catch {
-    return info;
-  }
-}
-const browserSourceHeader = "x-steal-source";
-let proxyConsoleFilterInstalled = false;
-class ProxyService extends EventEmitter {
-  constructor(appDataDir, host = "127.0.0.1", port = 8899) {
-    super();
-    this.appDataDir = appDataDir;
-    this.host = host;
-    this.port = port;
-    const sslCaDir = join(appDataDir, "certificates");
-    mkdirSync(sslCaDir, { recursive: true });
-    this.status = {
-      running: false,
-      capturePaused: false,
-      host,
-      port,
-      caCertPath: join(sslCaDir, "certs", "ca.pem"),
-      sslCaDir
-    };
-  }
-  appDataDir;
-  host;
-  port;
-  proxy;
-  captures = [];
-  status;
-  capturePaused = false;
-  getStatus() {
-    return { ...this.status };
-  }
-  getCaptures() {
-    return [...this.captures].reverse();
-  }
-  findCapture(id) {
-    return this.captures.find((capture) => capture.id === id);
-  }
-  clearCaptures() {
-    this.captures = [];
-  }
-  appendCaptures(captures) {
-    this.captures.push(...captures);
-  }
-  setCapturePaused(paused) {
-    this.capturePaused = paused;
-    this.status = { ...this.status, capturePaused: paused };
-    this.emit("status", this.getStatus());
-    return this.getStatus();
-  }
-  async start() {
-    if (this.proxy) return this.getStatus();
-    const proxy = new Proxy();
-    this.proxy = proxy;
-    installProxyConsoleFilter();
-    suppressNoisyProxyLogs(proxy);
-    guardCertificateHosts(proxy);
-    this.status = { ...this.status, running: false, error: void 0 };
-    this.emit("status", this.getStatus());
-    proxy.onError((_ctx, error, kind) => {
-      if (isBenignProxyError(kind, error)) return;
-      this.status = { ...this.status, error: error.message };
-      this.emit("status", this.getStatus());
-    });
-    proxy.onRequest((ctx, callback) => {
-      const startedAtMs = Date.now();
-      const requestChunks = [];
-      const responseChunks = [];
-      const request = ctx.clientToProxyRequest;
-      if (headerToString$1(request.headers.upgrade).toLowerCase() === "websocket") {
-        callback();
-        return;
-      }
-      const host = headerToString$1(request.headers.host);
-      const protocol = ctx.isSSL ? "https" : "http";
-      const path = request.url || "/";
-      const url = path.startsWith("http://") || path.startsWith("https://") ? path : `${protocol}://${host}${path}`;
-      const source = headerToString$1(request.headers[browserSourceHeader]) === "browser" ? "browser" : "proxy";
-      const clientPort = request.socket.remotePort || 0;
-      const sourceAppLookup = source === "browser" ? Promise.resolve({ name: "Browser", pid: void 0 }) : findClientProcess(clientPort, this.port);
-      delete request.headers[browserSourceHeader];
-      ctx.stealSourceAppLookup = sourceAppLookup;
-      ctx.stealCapture = {
-        id: crypto.randomUUID(),
-        method: request.method || "GET",
-        url,
-        protocol,
-        host,
-        path,
-        source,
-        sourceAppName: source === "browser" ? "Browser" : void 0,
-        sourceProcessId: void 0,
-        startedAt: new Date(startedAtMs).toISOString(),
-        durationMs: 0,
-        requestHeaders: normalizeHeaders(request.headers),
-        requestBody: "",
-        requestSize: 0,
-        responseStatusCode: 0,
-        responseStatusMessage: "",
-        responseHeaders: {},
-        responseBody: "",
-        responseSize: 0
-      };
-      void sourceAppLookup.then((sourceApp) => {
-        const capture = ctx.stealCapture;
-        if (sourceApp.isStealChrome) capture.source = "browser";
-        capture.sourceAppName = sourceApp.name || capture.sourceAppName;
-        capture.sourceProcessId = sourceApp.pid;
-      }).finally(callback);
-      ctx.onRequestData((_ctx, chunk, done) => {
-        requestChunks.push(Buffer.from(chunk));
-        done(null, chunk);
-      });
-      ctx.onResponse((_ctx, done) => {
-        const response = ctx.serverToProxyResponse;
-        const capture = ctx.stealCapture;
-        capture.responseStatusCode = response.statusCode || 0;
-        capture.responseStatusMessage = response.statusMessage || "";
-        capture.responseHeaders = normalizeHeaders(response.headers);
-        done();
-      });
-      ctx.onResponseData((_ctx, chunk, done) => {
-        responseChunks.push(Buffer.from(chunk));
-        done(null, chunk);
-      });
-      ctx.onResponseEnd((_ctx, done) => {
-        void (async () => {
-          const capture = ctx.stealCapture;
-          const sourceApp = await ctx.stealSourceAppLookup;
-          const requestBody = Buffer.concat(requestChunks);
-          const responseBody = Buffer.concat(responseChunks);
-          const decodedRequestBody = decodeBody(requestBody, capture.requestHeaders);
-          const decodedResponseBody = decodeBody(responseBody, capture.responseHeaders);
-          if (sourceApp.isStealChrome) capture.source = "browser";
-          capture.sourceAppName = sourceApp.name || capture.sourceAppName;
-          capture.sourceProcessId = sourceApp.pid;
-          capture.durationMs = Date.now() - startedAtMs;
-          capture.requestSize = requestBody.byteLength;
-          capture.responseSize = responseBody.byteLength;
-          capture.requestBody = decodedRequestBody.text;
-          capture.requestBodyBase64 = decodedRequestBody.base64;
-          capture.responseBody = decodedResponseBody.text;
-          capture.responseBodyBase64 = decodedResponseBody.base64;
-          this.upsertCapture(capture);
-          done();
-        })().catch((error) => done(error));
-      });
-    });
-    proxy.onWebSocketConnection((ctx, callback) => {
-      const request = ctx.clientToProxyRequest;
-      const host = headerToString$1(request.headers.host);
-      const protocol = ctx.isSSL ? "https" : "http";
-      const path = request.url || "/";
-      const httpUrl = path.startsWith("http://") || path.startsWith("https://") ? path : `${protocol}://${host}${path}`;
-      const wsUrl = httpUrl.replace(/^http/i, "ws");
-      const source = headerToString$1(request.headers[browserSourceHeader]) === "browser" ? "browser" : "proxy";
-      const clientPort = request.socket.remotePort || 0;
-      const startedAt = (/* @__PURE__ */ new Date()).toISOString();
-      const capture = {
-        id: crypto.randomUUID(),
-        method: request.method || "GET",
-        url: wsUrl,
-        protocol,
-        host,
-        path,
-        source,
-        sourceAppName: source === "browser" ? "Browser" : void 0,
-        sourceProcessId: void 0,
-        startedAt,
-        durationMs: 0,
-        requestHeaders: normalizeHeaders(request.headers),
-        requestBody: "",
-        requestSize: 0,
-        responseStatusCode: 101,
-        responseStatusMessage: "Switching Protocols",
-        responseHeaders: {},
-        responseBody: "",
-        responseSize: 0,
-        isWebSocket: true,
-        webSocketMessages: []
-      };
-      const sourceAppLookup = source === "browser" ? Promise.resolve({ name: "Browser", pid: void 0 }) : findClientProcess(clientPort, this.port);
-      delete request.headers[browserSourceHeader];
-      ctx.stealSourceAppLookup = sourceAppLookup;
-      ctx.stealCapture = capture;
-      void sourceAppLookup.then((sourceApp) => {
-        if (sourceApp.isStealChrome) capture.source = "browser";
-        capture.sourceAppName = sourceApp.name || capture.sourceAppName;
-        capture.sourceProcessId = sourceApp.pid;
-        this.upsertCapture(capture);
-      }).finally(() => callback());
-    });
-    proxy.onWebSocketFrame((ctx, type, fromServer, data, flags, callback) => {
-      const capture = ctx.stealCapture;
-      if (capture?.isWebSocket) {
-        const message = webSocketMessageFromFrame(type, fromServer, data);
-        capture.webSocketMessages = [...capture.webSocketMessages || [], message];
-        capture.responseSize += message.size;
-        capture.durationMs = Date.now() - Date.parse(capture.startedAt);
-        this.upsertCapture(capture);
-      }
-      callback(null, data, flags);
-    });
-    proxy.onWebSocketClose((ctx, code, message, callback) => {
-      const capture = ctx.stealCapture;
-      if (capture?.isWebSocket) {
-        capture.durationMs = Date.now() - Date.parse(capture.startedAt);
-        capture.webSocketCloseCode = typeof code === "number" ? code : void 0;
-        capture.webSocketCloseReason = bufferToUtf8(message);
-        this.upsertCapture(capture);
-      }
-      callback();
-    });
-    proxy.onWebSocketError((ctx, error) => {
-      const capture = ctx.stealCapture;
-      if (capture?.isWebSocket) {
-        capture.webSocketError = error.message;
-        capture.durationMs = Date.now() - Date.parse(capture.startedAt);
-        this.upsertCapture(capture);
-      }
-    });
-    await new Promise((resolve, reject) => {
-      proxy.listen({ host: this.host, port: this.port, sslCaDir: this.status.sslCaDir }, (error) => {
-        if (error) {
-          this.proxy = void 0;
-          this.status = { ...this.status, running: false, error: error.message };
-          this.emit("status", this.getStatus());
-          reject(error);
-          return;
-        }
-        this.status = { ...this.status, running: true, error: void 0 };
-        this.emit("status", this.getStatus());
-        resolve();
-      });
-    });
-    return this.getStatus();
-  }
-  async stop() {
-    if (!this.proxy) return this.getStatus();
-    const proxy = this.proxy;
-    this.proxy = void 0;
-    await withTimeout(new Promise((resolve) => proxy.close(() => resolve())), 4e3).catch(() => void 0);
-    this.status = { ...this.status, running: false, error: void 0 };
-    this.emit("status", this.getStatus());
-    return this.getStatus();
-  }
-  upsertCapture(capture) {
-    const index = this.captures.findIndex((item) => item.id === capture.id);
-    if (index === -1) {
-      if (!this.capturePaused) this.captures.push(capture);
-    } else {
-      this.captures[index] = capture;
-    }
-    if (!this.capturePaused) this.emit("capture", capture);
-  }
-}
-function normalizeHeaders(headers) {
-  return Object.fromEntries(Object.entries(headers || {}).map(([key, value]) => [key.toLowerCase(), value]));
-}
-function headerToString$1(value) {
-  return Array.isArray(value) ? value[0] || "" : value || "";
-}
-function suppressNoisyProxyLogs(proxy) {
-  const mutableProxy = proxy;
-  const originalOnError = mutableProxy._onError.bind(proxy);
-  mutableProxy._onError = (kind, ctx, error) => {
-    if (isBenignProxyError(kind, error)) return;
-    originalOnError(kind, ctx, error);
-  };
-}
-function guardCertificateHosts(proxy) {
-  const originalOnCertificateMissing = proxy.onCertificateMissing.bind(proxy);
-  proxy.onCertificateMissing = (ctx, files, callback) => {
-    const hosts = (files.hosts || [ctx.hostname]).map(String).filter(isValidCertificateHost);
-    if (hosts.length === 0) {
-      callback(new Error(`Invalid CONNECT host for certificate: ${String(ctx.hostname || "")}`));
-      return;
-    }
-    try {
-      originalOnCertificateMissing(ctx, { ...files, hosts }, callback);
-    } catch (error) {
-      callback(error instanceof Error ? error : new Error(String(error)));
-    }
-  };
-}
-function isValidCertificateHost(host) {
-  const normalized = host.trim().replace(/^\[|\]$/g, "");
-  if (!normalized || normalized.includes("/") || normalized.includes(":")) return false;
-  if (/^[\d.]+$/.test(normalized)) return isIP(normalized) !== 0;
-  return /^(?:\*\.)?(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$/.test(normalized);
-}
-function isBenignProxyError(kind, error) {
-  const code = error.code;
-  if (kind === "HTTPS_CLIENT_ERROR" && (code === "ECONNRESET" || error.message === "socket hang up")) return true;
-  if (code === "ECONNRESET" || code === "EPIPE") return true;
-  return false;
-}
-function webSocketMessageFromFrame(type, fromServer, data) {
-  const buffer = rawDataToBuffer(data);
-  const text = decodeWebSocketText(buffer);
-  const isBinary = text === void 0;
-  return {
-    id: crypto.randomUUID(),
-    direction: fromServer ? "incoming" : "outgoing",
-    type: type === "ping" || type === "pong" ? type : "message",
-    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-    size: buffer.byteLength,
-    text: isBinary ? `[binary frame: ${buffer.byteLength} bytes]` : text,
-    base64: isBinary ? buffer.toString("base64") : void 0,
-    isBinary
-  };
-}
-function rawDataToBuffer(data) {
-  if (Buffer.isBuffer(data)) return data;
-  if (Array.isArray(data)) return Buffer.concat(data.map((item) => Buffer.isBuffer(item) ? item : Buffer.from(item)));
-  if (typeof data === "string") return Buffer.from(data);
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  return Buffer.from(data || "");
-}
-function decodeWebSocketText(buffer) {
-  try {
-    const text = buffer.toString("utf8");
-    if (Buffer.from(text, "utf8").equals(buffer)) return text;
-    return void 0;
-  } catch {
-    return void 0;
-  }
-}
-function bufferToUtf8(value) {
-  if (value === void 0) return void 0;
-  return Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
-}
-function installProxyConsoleFilter() {
-  if (proxyConsoleFilterInstalled) return;
-  proxyConsoleFilterInstalled = true;
-  const originalDebug = console.debug.bind(console);
-  console.debug = (...args) => {
-    const message = args.map(String).join(" ");
-    if (/^(starting server for|https server started for|creating SNI context for|https server started on)/.test(message)) return;
-    originalDebug(...args);
-  };
-}
-function withTimeout(promise, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms.`)), timeoutMs);
-    promise.then(resolve, reject).finally(() => clearTimeout(timer));
-  });
-}
-const defaultSettings = {
-  autoStartProxy: true,
-  systemProxyEnabled: true,
-  autoShowBrowser: true,
-  browserMode: "embedded"
-};
-class SettingsStore {
-  constructor(filePath) {
-    this.filePath = filePath;
-    mkdirSync(dirname(filePath), { recursive: true });
-  }
-  filePath;
-  async get() {
-    try {
-      const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw);
-      return normalizeSettings(parsed);
-    } catch {
-      await this.set(defaultSettings);
-      return defaultSettings;
-    }
-  }
-  async update(patch) {
-    const next = normalizeSettings({ ...await this.get(), ...patch });
-    await this.set(next);
-    return next;
-  }
-  async set(settings) {
-    await writeFile(this.filePath, JSON.stringify(settings, null, 2));
-  }
-}
-function normalizeSettings(value) {
-  return {
-    autoStartProxy: typeof value.autoStartProxy === "boolean" ? value.autoStartProxy : defaultSettings.autoStartProxy,
-    systemProxyEnabled: typeof value.systemProxyEnabled === "boolean" ? value.systemProxyEnabled : defaultSettings.systemProxyEnabled,
-    autoShowBrowser: typeof value.autoShowBrowser === "boolean" ? value.autoShowBrowser : defaultSettings.autoShowBrowser,
-    browserMode: value.browserMode === "chrome" ? "chrome" : "embedded"
-  };
-}
-const defaultCollectionSettings = {
-  variables: {},
-  headers: {},
-  cookies: {},
-  userAgent: {
-    enabled: false,
-    preset: "none",
-    value: ""
-  }
-};
-class SavedApiStore {
-  constructor(collectionsDir) {
-    this.collectionsDir = collectionsDir;
-    this.collectionsIndexPath = join(collectionsDir, "collections.json");
-  }
-  collectionsDir;
-  collectionsIndexPath;
-  async ensureReady() {
-    await mkdir(this.collectionsDir, { recursive: true });
-  }
-  async list() {
-    await this.ensureReady();
-    const files = await readdir(this.collectionsDir);
-    const saved = await Promise.all(
-      files.filter((file) => file.endsWith(".json") && file !== "collections.json").map(async (file) => {
-        const raw = await readFile(join(this.collectionsDir, file), "utf8");
-        return JSON.parse(raw);
-      })
-    );
-    return saved.sort((a, b) => b.savedAt.localeCompare(a.savedAt));
-  }
-  async listCollections() {
-    await this.ensureReady();
-    const [collections, savedApis] = await Promise.all([this.readCollections(), this.list()]);
-    const counts = /* @__PURE__ */ new Map();
-    for (const api of savedApis) {
-      if (api.collectionId) counts.set(api.collectionId, (counts.get(api.collectionId) || 0) + 1);
-    }
-    return collections.map((collection) => ({ ...collection, itemCount: counts.get(collection.id) || 0 })).sort((a, b) => a.name.localeCompare(b.name));
-  }
-  async updateCollectionSettings(collectionId, settings) {
-    const collections = await this.readCollections();
-    const nextCollections = collections.map((collection) => collection.id === collectionId ? { ...collection, settings: normalizeCollectionSettings(settings), updatedAt: (/* @__PURE__ */ new Date()).toISOString() } : collection);
-    await this.writeCollections(nextCollections);
-    return this.listCollections();
-  }
-  async save(exchange, name, tags, collectionName) {
-    await this.ensureReady();
-    const collection = await this.ensureCollection(collectionName);
-    const saved = {
-      id: crypto.randomUUID(),
-      name: name.trim() || `${exchange.method} ${new URL(exchange.url).pathname}`,
-      tags,
-      savedAt: (/* @__PURE__ */ new Date()).toISOString(),
-      collectionId: collection.id,
-      collectionName: collection.name,
-      exchange: {
-        ...exchange,
-        savedName: name.trim(),
-        tags
-      }
-    };
-    await writeFile(join(this.collectionsDir, `${saved.id}.json`), JSON.stringify(saved, null, 2));
-    return saved;
-  }
-  async importMany(savedApis) {
-    await this.ensureReady();
-    const imported = await Promise.all(
-      savedApis.map(async (api) => {
-        const collection = await this.ensureCollection(api.collectionName || "Default");
-        const item = {
-          ...api,
-          id: api.id || crypto.randomUUID(),
-          collectionId: api.collectionId || collection.id,
-          collectionName: api.collectionName || collection.name
-        };
-        await writeFile(join(this.collectionsDir, `${item.id}.json`), JSON.stringify(item, null, 2));
-        return item;
-      })
-    );
-    return imported;
-  }
-  async ensureCollection(name) {
-    const collections = await this.readCollections();
-    const normalizedName = name.trim() || "Default";
-    const existing = collections.find((collection) => collection.name.toLowerCase() === normalizedName.toLowerCase());
-    if (existing) {
-      const updated = { ...existing, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
-      await this.writeCollections(collections.map((collection) => collection.id === existing.id ? updated : collection));
-      return updated;
-    }
-    const now = (/* @__PURE__ */ new Date()).toISOString();
-    const created = {
-      id: crypto.randomUUID(),
-      name: normalizedName,
-      createdAt: now,
-      updatedAt: now,
-      itemCount: 0,
-      settings: defaultCollectionSettings
-    };
-    await this.writeCollections([...collections, created]);
-    return created;
-  }
-  async readCollections() {
-    await this.ensureReady();
-    try {
-      const raw = await readFile(this.collectionsIndexPath, "utf8");
-      const parsed = JSON.parse(raw);
-      return parsed.map(normalizeCollection);
-    } catch {
-      return [];
-    }
-  }
-  async writeCollections(collections) {
-    await writeFile(this.collectionsIndexPath, JSON.stringify(collections, null, 2));
-  }
-}
-function normalizeCollection(collection) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  return {
-    id: collection.id || crypto.randomUUID(),
-    name: collection.name || "Default",
-    createdAt: collection.createdAt || now,
-    updatedAt: collection.updatedAt || collection.createdAt || now,
-    itemCount: collection.itemCount || 0,
-    settings: normalizeCollectionSettings(collection.settings)
-  };
-}
-function normalizeCollectionSettings(settings) {
-  return {
-    variables: normalizeStringMap(settings?.variables),
-    headers: normalizeStringMap(settings?.headers),
-    cookies: normalizeStringMap(settings?.cookies),
-    userAgent: {
-      enabled: Boolean(settings?.userAgent?.enabled),
-      preset: settings?.userAgent?.preset || defaultCollectionSettings.userAgent.preset,
-      value: settings?.userAgent?.value || ""
-    }
-  };
-}
-function normalizeStringMap(value) {
-  if (!value || typeof value !== "object") return {};
-  return Object.fromEntries(
-    Object.entries(value).filter(([key, item]) => key.trim() && typeof item === "string").map(([key, item]) => [key.trim(), item])
-  );
-}
 const defaultTheme = {
   name: "Steal Light",
   colors: {
@@ -1547,6 +897,7 @@ let proxyService;
 let savedApiStore;
 let settingsStore;
 let themeStore;
+let workspaceStore;
 let pluginLoader;
 let certificatePromptInFlight = false;
 let tray;
@@ -1556,6 +907,8 @@ let quitCleanupComplete = false;
 let themeHotReloadEnabled = false;
 let themeWatcher;
 let themeReloadTimer;
+let sharedCaptureSyncTimer;
+let mcpBridgeServer;
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -1583,8 +936,8 @@ function createWindow() {
   mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
     console.error("Renderer failed to load", { errorCode, errorDescription, validatedURL });
   });
-  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    console.log(`renderer[${level}] ${message} (${sourceId}:${line})`);
+  mainWindow.webContents.on("console-message", (_event, details) => {
+    console.log(`renderer[${details.level}] ${details.message} (${details.sourceId}:${details.lineNumber})`);
   });
   mainWindow.on("closed", () => {
     mainWindow = void 0;
@@ -1594,15 +947,21 @@ app.whenReady().then(async () => {
   const dataDir = join(app.getPath("userData"), "steal-data");
   mkdirSync(dataDir, { recursive: true });
   proxyService = new ProxyService(dataDir);
+  await proxyService.hydrateSharedCaptures();
   savedApiStore = new SavedApiStore(join(dataDir, "collections"));
   settingsStore = new SettingsStore(join(dataDir, "settings.json"));
   themeStore = new ThemeStore(join(dataDir, "theme.json"));
+  workspaceStore = new WorkspaceStore(join(dataDir, "workspaces"));
   const settings = await settingsStore.get();
   const pluginAPI = new PluginAPI(proxyService);
   pluginLoader = new PluginLoader(pluginAPI);
   await pluginLoader.loadAllPlugins();
+  mcpBridgeServer = new McpBridgeServer(resolveStealBridgeFilePath(dataDir));
+  registerMcpBridge();
+  await mcpBridgeServer.start();
   registerIpc();
   wireProxyEvents();
+  startSharedCaptureSync();
   await configureCaptureSession();
   createWindow();
   createTray();
@@ -1651,10 +1010,21 @@ function wireProxyEvents() {
   proxyService.on("capture", (exchange) => {
     mainWindow?.webContents.send("captures:new", exchange);
   });
+  proxyService.on("captures", (captures) => {
+    mainWindow?.webContents.send("captures:changed", captures);
+  });
   proxyService.on("status", (status) => {
     mainWindow?.webContents.send("proxy:changed", status);
     updateTray(status);
   });
+}
+function startSharedCaptureSync() {
+  clearInterval(sharedCaptureSyncTimer);
+  sharedCaptureSyncTimer = setInterval(() => {
+    void proxyService.syncSharedCaptures().catch((error) => {
+      console.error("Failed to sync shared captures", error);
+    });
+  }, 1200);
 }
 function registerIpc() {
   ipcMain.handle("settings:get", () => settingsStore.get());
@@ -1675,6 +1045,12 @@ function registerIpc() {
   ipcMain.handle("clipboard:write-text", (_event, text) => {
     clipboard.writeText(text);
   });
+  ipcMain.handle("workspaces:state", () => workspaceStore.getState());
+  ipcMain.handle("workspaces:load", (_event, workspaceId) => workspaceStore.load(workspaceId));
+  ipcMain.handle("workspaces:save", (_event, payload) => {
+    return workspaceStore.save(payload);
+  });
+  ipcMain.handle("workspaces:delete", (_event, workspaceId) => workspaceStore.delete(workspaceId));
   ipcMain.handle("proxy:status", () => proxyService.getStatus());
   ipcMain.handle("proxy:start", () => startProxyWithSystemSetup());
   ipcMain.handle("proxy:stop", () => stopProxyWithSystemRestore());
@@ -1849,6 +1225,46 @@ function registerIpc() {
     return processed;
   });
 }
+function registerMcpBridge() {
+  if (!mcpBridgeServer) return;
+  mcpBridgeServer.register("getProxyStatus", () => proxyService.getStatus());
+  mcpBridgeServer.register("startProxy", () => startProxyWithSystemSetup());
+  mcpBridgeServer.register("stopProxy", () => stopProxyWithSystemRestore());
+  mcpBridgeServer.register("setCapturePaused", (params) => proxyService.setCapturePaused(Boolean(params?.paused)));
+  mcpBridgeServer.register("clearCaptures", () => {
+    proxyService.clearCaptures();
+    return { cleared: true };
+  });
+  mcpBridgeServer.register("listCaptures", () => proxyService.getCaptures());
+  mcpBridgeServer.register("getCapture", (params) => {
+    const id = String(params?.id || "");
+    const capture = proxyService.findCapture(id);
+    if (!capture) throw new Error(`Capture not found: ${id}`);
+    return capture;
+  });
+  mcpBridgeServer.register("getSettings", () => settingsStore.get());
+  mcpBridgeServer.register("updateSettings", (params) => settingsStore.update(params || {}));
+  mcpBridgeServer.register("listWorkspaces", () => workspaceStore.getState());
+  mcpBridgeServer.register("loadWorkspace", (params) => {
+    const workspaceId = String(params?.workspaceId || "");
+    return workspaceStore.load(workspaceId);
+  });
+  mcpBridgeServer.register("listCollections", () => savedApiStore.listCollections());
+  mcpBridgeServer.register("listSavedApis", () => savedApiStore.list());
+  mcpBridgeServer.register("getSavedApi", async (params) => {
+    const id = String(params?.id || "");
+    const api = (await savedApiStore.list()).find((item) => item.id === id);
+    if (!api) throw new Error(`Saved API not found: ${id}`);
+    return api;
+  });
+  mcpBridgeServer.register("saveCaptureToCollection", async (params) => {
+    const payload = params || {};
+    const exchangeId = String(payload.exchangeId || "");
+    const capture = proxyService.findCapture(exchangeId);
+    if (!capture) throw new Error(`Capture not found: ${exchangeId}`);
+    return savedApiStore.save(capture, payload.name || "", payload.tags || [], payload.collectionName?.trim() || "Default");
+  });
+}
 async function setThemeHotReload(enabled) {
   themeHotReloadEnabled = enabled;
   themeWatcher?.close();
@@ -1909,6 +1325,8 @@ async function removeSystemProxyFromSystem() {
   }
 }
 async function cleanupBeforeQuit() {
+  clearInterval(sharedCaptureSyncTimer);
+  await mcpBridgeServer?.stop().catch(() => void 0);
   if (!proxyService) {
     await restoreSystemProxy().catch(() => void 0);
     return;
@@ -2016,25 +1434,7 @@ async function getCertificateStatus() {
   };
 }
 async function replay(request) {
-  const startedAt = performance.now();
-  const headers = Object.fromEntries(Object.entries(request.headers).filter(([, value]) => value.trim() !== ""));
-  const response = await fetch(request.url, {
-    method: request.method,
-    headers,
-    body: ["GET", "HEAD"].includes(request.method.toUpperCase()) ? void 0 : request.body
-  });
-  const responseBuffer = Buffer.from(await response.arrayBuffer());
-  const responseHeaders = Object.fromEntries(response.headers.entries());
-  const body = decodeBody(responseBuffer, responseHeaders);
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers: responseHeaders,
-    body: body.text,
-    bodyBase64: body.base64,
-    durationMs: Math.round(performance.now() - startedAt),
-    size: responseBuffer.byteLength
-  };
+  return replayRequest(request);
 }
 async function launchChromeBrowser(url) {
   const profileDir = join(app.getPath("userData"), "steal-chrome-profile");

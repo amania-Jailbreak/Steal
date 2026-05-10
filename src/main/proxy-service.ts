@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { Proxy as MitmProxy } from 'http-mitm-proxy'
 import { decodeBody } from './body-decode'
 import { findClientProcess } from './client-process'
+import { SharedCaptureStore } from './shared-capture-store'
 import type { CapturedExchange, HeaderMap, ProxyStatus, WebSocketMessage } from '../shared/types'
 
 type ProxyContext = Record<string, any>
@@ -16,6 +17,7 @@ let proxyConsoleFilterInstalled = false
 
 interface ProxyServiceEvents {
   capture: [CapturedExchange]
+  captures: [CapturedExchange[]]
   status: [ProxyStatus]
 }
 
@@ -29,6 +31,8 @@ export class ProxyService extends EventEmitter {
   private captures: CapturedExchange[] = []
   private status: ProxyStatus
   private capturePaused = false
+  private readonly sharedCaptureStore: SharedCaptureStore
+  private lastSharedSerialized = '[]'
 
   constructor(
     private readonly appDataDir: string,
@@ -46,6 +50,7 @@ export class ProxyService extends EventEmitter {
       caCertPath: join(sslCaDir, 'certs', 'ca.pem'),
       sslCaDir
     }
+    this.sharedCaptureStore = new SharedCaptureStore(join(appDataDir, 'captures', 'live-captures.json'))
   }
 
   getStatus(): ProxyStatus {
@@ -62,10 +67,37 @@ export class ProxyService extends EventEmitter {
 
   clearCaptures(): void {
     this.captures = []
+    this.lastSharedSerialized = '[]'
+    void this.sharedCaptureStore.clear().catch(() => undefined)
+    this.emit('captures', this.getCaptures())
   }
 
   appendCaptures(captures: CapturedExchange[]): void {
-    this.captures.push(...captures)
+    const map = new Map(this.captures.map((capture) => [capture.id, capture]))
+    for (const capture of captures) map.set(capture.id, capture)
+    this.captures = Array.from(map.values())
+    void this.sharedCaptureStore.mergeMany(captures).then((serialized) => {
+      this.lastSharedSerialized = serialized
+    }).catch(() => undefined)
+    this.emit('captures', this.getCaptures())
+  }
+
+  async hydrateSharedCaptures(): Promise<boolean> {
+    const { captures, serialized } = await this.sharedCaptureStore.read()
+    const changed = serialized !== this.lastSharedSerialized
+    this.captures = captures
+    this.lastSharedSerialized = serialized
+    if (changed) this.emit('captures', this.getCaptures())
+    return changed
+  }
+
+  async syncSharedCaptures(): Promise<boolean> {
+    const { captures, serialized } = await this.sharedCaptureStore.read()
+    if (serialized === this.lastSharedSerialized) return false
+    this.captures = captures
+    this.lastSharedSerialized = serialized
+    this.emit('captures', this.getCaptures())
+    return true
   }
 
   setCapturePaused(paused: boolean): ProxyStatus {
@@ -301,6 +333,11 @@ export class ProxyService extends EventEmitter {
       if (!this.capturePaused) this.captures.push(capture)
     } else {
       this.captures[index] = capture
+    }
+    if (!this.capturePaused) {
+      void this.sharedCaptureStore.upsert(capture).then((serialized) => {
+        this.lastSharedSerialized = serialized
+      }).catch(() => undefined)
     }
     if (!this.capturePaused) this.emit('capture', capture)
   }
