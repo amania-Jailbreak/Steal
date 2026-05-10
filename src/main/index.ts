@@ -15,7 +15,7 @@ import { PluginAPI } from './plugin-api'
 import { replayRequest } from './replay'
 import { McpBridgeServer } from './mcp-bridge'
 import { resolveStealBridgeFilePath } from './app-data'
-import type { AppSettings, AppTheme, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, WorkspaceCaptureTab } from '../shared/types'
+import type { AppSettings, AppTheme, CaptureReplacementRule, CaptureTabsState, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, WorkspaceCaptureTab } from '../shared/types'
 import type { StealPlugin } from '../shared/plugin-types'
 
 let mainWindow: BrowserWindow | undefined
@@ -35,6 +35,10 @@ let themeWatcher: FSWatcher | undefined
 let themeReloadTimer: NodeJS.Timeout | undefined
 let sharedCaptureSyncTimer: NodeJS.Timeout | undefined
 let mcpBridgeServer: McpBridgeServer | undefined
+let captureTabsState: CaptureTabsState = {
+  tabs: [{ id: 'live', title: 'Live', kind: 'live', filters: { query: '', showFilterPanel: false, appBrowserOnly: false, resourceFilter: 'all', selectedDomains: [], regexQuery: '', endpointPrefixes: [], displayReplacements: [], methodFilter: 'all' } }],
+  activeCaptureTabId: 'live'
+}
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
 
@@ -116,9 +120,14 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   if (quitCleanupStarted) return
   quitCleanupStarted = true
-  void cleanupBeforeQuit().finally(() => {
-    quitCleanupComplete = true
-    app.quit()
+  void workspaceStore.saveLastSession({
+    tabs: captureTabsState.tabs,
+    activeCaptureTabId: captureTabsState.activeCaptureTabId
+  }).catch(() => undefined).finally(() => {
+    void cleanupBeforeQuit().finally(() => {
+      quitCleanupComplete = true
+      app.quit()
+    })
   })
 })
 
@@ -170,6 +179,9 @@ function startSharedCaptureSync(): void {
 }
 
 function registerIpc(): void {
+  ipcMain.on('capture-tabs:sync', (_event, state: CaptureTabsState) => {
+    captureTabsState = normalizeCaptureTabsState(state)
+  })
   ipcMain.handle('settings:get', () => settingsStore.get())
   ipcMain.handle('settings:update', (_event, patch) => settingsStore.update(patch))
   ipcMain.handle('theme:get', () => themeStore.get())
@@ -383,6 +395,27 @@ function registerIpc(): void {
 function registerMcpBridge(): void {
   if (!mcpBridgeServer) return
 
+  mcpBridgeServer.register('listCaptureTabs', () => captureTabsState)
+  mcpBridgeServer.register('updateCaptureTabFilters', (params) => {
+    const payload = params as {
+      tabId?: string
+      query?: string
+      showFilterPanel?: boolean
+      appBrowserOnly?: boolean
+      resourceFilter?: WorkspaceCaptureTab['filters']['resourceFilter']
+      selectedDomains?: string[]
+      regexQuery?: string
+      endpointPrefixes?: string[]
+      displayReplacements?: CaptureReplacementRule[]
+      methodFilter?: string
+      minDurationMs?: number | null
+      maxDurationMs?: number | null
+      clearAll?: boolean
+    } | undefined
+    captureTabsState = updateCaptureTabsStateFilters(captureTabsState, payload)
+    mainWindow?.webContents.send('capture-tabs:apply-state', captureTabsState)
+    return captureTabsState
+  })
   mcpBridgeServer.register('getProxyStatus', () => proxyService.getStatus())
   mcpBridgeServer.register('startProxy', () => startProxyWithSystemSetup())
   mcpBridgeServer.register('stopProxy', () => stopProxyWithSystemRestore())
@@ -420,6 +453,87 @@ function registerMcpBridge(): void {
     if (!capture) throw new Error(`Capture not found: ${exchangeId}`)
     return savedApiStore.save(capture, payload.name || '', payload.tags || [], payload.collectionName?.trim() || 'Default')
   })
+}
+
+function normalizeCaptureTabsState(state: CaptureTabsState): CaptureTabsState {
+  const tabs = Array.isArray(state?.tabs) && state.tabs.length > 0 ? state.tabs.map((tab) => ({
+    ...tab,
+    filters: normalizeWorkspaceCaptureFilters(tab.filters)
+  })) : captureTabsState.tabs
+  const activeCaptureTabId = tabs.some((tab) => tab.id === state?.activeCaptureTabId) ? state.activeCaptureTabId : tabs[0].id
+  return { tabs, activeCaptureTabId }
+}
+
+function updateCaptureTabsStateFilters(
+  state: CaptureTabsState,
+  patch?: {
+    tabId?: string
+    query?: string
+    showFilterPanel?: boolean
+    appBrowserOnly?: boolean
+    resourceFilter?: WorkspaceCaptureTab['filters']['resourceFilter']
+    selectedDomains?: string[]
+    regexQuery?: string
+    endpointPrefixes?: string[]
+    displayReplacements?: CaptureReplacementRule[]
+    methodFilter?: string
+    minDurationMs?: number | null
+    maxDurationMs?: number | null
+    clearAll?: boolean
+  }
+): CaptureTabsState {
+  const targetId = patch?.tabId || state.activeCaptureTabId
+  return normalizeCaptureTabsState({
+    ...state,
+    tabs: state.tabs.map((tab) => {
+      if (tab.id !== targetId) return tab
+      const baseFilters = patch?.clearAll ? normalizeWorkspaceCaptureFilters() : normalizeWorkspaceCaptureFilters(tab.filters)
+      return {
+        ...tab,
+        filters: normalizeWorkspaceCaptureFilters({
+          ...baseFilters,
+          ...(patch?.query !== undefined ? { query: patch.query } : {}),
+          ...(patch?.showFilterPanel !== undefined ? { showFilterPanel: patch.showFilterPanel } : {}),
+          ...(patch?.appBrowserOnly !== undefined ? { appBrowserOnly: patch.appBrowserOnly } : {}),
+          ...(patch?.resourceFilter !== undefined ? { resourceFilter: patch.resourceFilter } : {}),
+          ...(patch?.selectedDomains !== undefined ? { selectedDomains: patch.selectedDomains } : {}),
+          ...(patch?.regexQuery !== undefined ? { regexQuery: patch.regexQuery } : {}),
+          ...(patch?.endpointPrefixes !== undefined ? { endpointPrefixes: patch.endpointPrefixes } : {}),
+          ...(patch?.displayReplacements !== undefined ? { displayReplacements: patch.displayReplacements } : {}),
+          ...(patch?.methodFilter !== undefined ? { methodFilter: patch.methodFilter } : {}),
+          ...(patch?.minDurationMs !== undefined ? { minDurationMs: patch.minDurationMs ?? undefined } : {}),
+          ...(patch?.maxDurationMs !== undefined ? { maxDurationMs: patch.maxDurationMs ?? undefined } : {})
+        })
+      }
+    })
+  })
+}
+
+function normalizeWorkspaceCaptureFilters(filters?: Partial<WorkspaceCaptureTab['filters']>): WorkspaceCaptureTab['filters'] {
+  return {
+    query: filters?.query || '',
+    showFilterPanel: Boolean(filters?.showFilterPanel),
+    appBrowserOnly: Boolean(filters?.appBrowserOnly),
+    resourceFilter: filters?.resourceFilter || 'all',
+    selectedDomains: Array.isArray(filters?.selectedDomains) ? [...filters.selectedDomains] : [],
+    regexQuery: filters?.regexQuery || '',
+    endpointPrefixes: Array.isArray(filters?.endpointPrefixes) ? filters.endpointPrefixes.map((item) => item.trim()).filter(Boolean) : [],
+    displayReplacements: normalizeCaptureReplacementRules(filters?.displayReplacements),
+    methodFilter: filters?.methodFilter || 'all',
+    minDurationMs: typeof filters?.minDurationMs === 'number' ? filters.minDurationMs : undefined,
+    maxDurationMs: typeof filters?.maxDurationMs === 'number' ? filters.maxDurationMs : undefined
+  }
+}
+
+function normalizeCaptureReplacementRules(rules?: CaptureReplacementRule[]): CaptureReplacementRule[] {
+  return Array.isArray(rules)
+    ? rules
+      .map((rule) => ({
+        match: String(rule?.match || '').trim(),
+        replace: String(rule?.replace || '').trim()
+      }))
+      .filter((rule) => rule.match && rule.replace)
+    : []
 }
 
 async function setThemeHotReload(enabled: boolean): Promise<void> {

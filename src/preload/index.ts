@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { AppApi, AppSettings, AppTheme, CapturedExchange, CollectionSettings, ProxyStatus, ReplayRequest, WorkspaceCaptureTab } from '../shared/types'
+import type { AppApi, AppSettings, AppTheme, CaptureTabsState, CapturedExchange, CollectionSettings, ProxyStatus, ReplayRequest, WorkspaceCaptureTab } from '../shared/types'
 
 const api: AppApi = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -40,6 +40,9 @@ const api: AppApi = {
   loadWorkspace: (workspaceId: string) => ipcRenderer.invoke('workspaces:load', workspaceId),
   saveWorkspace: (payload: { workspaceId?: string; name: string; tabs: WorkspaceCaptureTab[]; activeCaptureTabId: string }) => ipcRenderer.invoke('workspaces:save', payload),
   deleteWorkspace: (workspaceId: string) => ipcRenderer.invoke('workspaces:delete', workspaceId),
+  syncCaptureTabsState: (state: CaptureTabsState) => {
+    ipcRenderer.send('capture-tabs:sync', state)
+  },
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggle-maximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
@@ -62,6 +65,11 @@ const api: AppApi = {
     const listener = (_event: Electron.IpcRendererEvent, theme: AppTheme): void => callback(theme)
     ipcRenderer.on('theme:changed', listener)
     return () => ipcRenderer.removeListener('theme:changed', listener)
+  },
+  onCaptureTabsStateApplied: (callback: (state: CaptureTabsState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: CaptureTabsState): void => callback(state)
+    ipcRenderer.on('capture-tabs:apply-state', listener)
+    return () => ipcRenderer.removeListener('capture-tabs:apply-state', listener)
   },
   
   listPlugins: () => ipcRenderer.invoke('plugins:list'),

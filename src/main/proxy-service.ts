@@ -14,6 +14,7 @@ type MitmProxyWithPrivateError = MitmProxy & {
   _onError: (kind: string, ctx: ProxyContext | null, error: Error) => void
 }
 let proxyConsoleFilterInstalled = false
+let pendingProxyConsoleErrorLabel: string | undefined
 
 interface ProxyServiceEvents {
   capture: [CapturedExchange]
@@ -129,6 +130,10 @@ export class ProxyService extends EventEmitter {
       const requestChunks: Buffer[] = []
       const responseChunks: Buffer[] = []
       const request = ctx.clientToProxyRequest
+      if (!request?.headers) {
+        callback()
+        return
+      }
       if (headerToString(request.headers.upgrade).toLowerCase() === 'websocket') {
         callback()
         return
@@ -138,7 +143,7 @@ export class ProxyService extends EventEmitter {
       const path = request.url || '/'
       const url = path.startsWith('http://') || path.startsWith('https://') ? path : `${protocol}://${host}${path}`
       const source = headerToString(request.headers[browserSourceHeader]) === 'browser' ? 'browser' : 'proxy'
-      const clientPort = request.socket.remotePort || 0
+      const clientPort = request.socket?.remotePort || 0
       const sourceAppLookup = source === 'browser'
         ? Promise.resolve({ name: 'Browser', pid: undefined })
         : findClientProcess(clientPort, this.port)
@@ -220,13 +225,17 @@ export class ProxyService extends EventEmitter {
 
     proxy.onWebSocketConnection((ctx: ProxyContext, callback: (error?: Error) => void) => {
       const request = ctx.clientToProxyRequest
+      if (!request?.headers) {
+        callback()
+        return
+      }
       const host = headerToString(request.headers.host)
       const protocol = ctx.isSSL ? 'https' : 'http'
       const path = request.url || '/'
       const httpUrl = path.startsWith('http://') || path.startsWith('https://') ? path : `${protocol}://${host}${path}`
       const wsUrl = httpUrl.replace(/^http/i, 'ws')
       const source = headerToString(request.headers[browserSourceHeader]) === 'browser' ? 'browser' : 'proxy'
-      const clientPort = request.socket.remotePort || 0
+      const clientPort = request.socket?.remotePort || 0
       const startedAt = new Date().toISOString()
       const capture: CapturedExchange = {
         id: crypto.randomUUID(),
@@ -433,10 +442,30 @@ function installProxyConsoleFilter(): void {
   if (proxyConsoleFilterInstalled) return
   proxyConsoleFilterInstalled = true
   const originalDebug = console.debug.bind(console)
+  const originalError = console.error.bind(console)
   console.debug = (...args: unknown[]) => {
     const message = args.map(String).join(' ')
     if (/^(starting server for|https server started for|creating SNI context for|https server started on)/.test(message)) return
     originalDebug(...args)
+  }
+  console.error = (...args: unknown[]) => {
+    if (args.length === 1 && typeof args[0] === 'string' && /^(Socket error:|Connection error:)$/.test(args[0])) {
+      pendingProxyConsoleErrorLabel = args[0]
+      return
+    }
+
+    const firstArg = args[0]
+    if (pendingProxyConsoleErrorLabel) {
+      const error = firstArg instanceof Error ? firstArg : undefined
+      if (error && isBenignProxyError(undefined, error)) {
+        pendingProxyConsoleErrorLabel = undefined
+        return
+      }
+      originalError(pendingProxyConsoleErrorLabel)
+      pendingProxyConsoleErrorLabel = undefined
+    }
+
+    originalError(...args)
   }
 }
 

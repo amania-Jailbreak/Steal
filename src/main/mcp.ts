@@ -10,7 +10,7 @@ import { replayRequest } from './replay'
 import { SettingsStore } from './settings-store'
 import { SavedApiStore } from './storage'
 import { WorkspaceStore } from './workspace-store'
-import type { AppSettings, CapturedExchange, ProxyStatus, SavedApi, SavedCollection, WorkspaceSnapshot, WorkspaceState } from '../shared/types'
+import type { AppSettings, CaptureTabsState, CapturedExchange, ProxyStatus, SavedApi, SavedCollection, WorkspaceSnapshot, WorkspaceState, WorkspaceCaptureTab } from '../shared/types'
 
 const serverInfo = {
   name: 'steal-mcp',
@@ -215,6 +215,54 @@ server.registerTool(
     }
   },
   async ({ paused }) => ok(await setCapturePausedData(paused))
+)
+
+server.registerTool(
+  'list_capture_tabs',
+  {
+    title: 'List capture tabs',
+    description: 'List the GUI capture tabs and their current filter state. Requires the Steal GUI bridge.'
+  },
+  async () => {
+    try {
+      return ok(await getCaptureTabsStateData())
+    } catch (error) {
+      return fail(error)
+    }
+  }
+)
+
+server.registerTool(
+  'update_capture_tab_filters',
+  {
+    title: 'Update capture tab filters',
+    description: 'Update basic or detailed filters on a GUI capture tab. Defaults to the active tab.',
+    inputSchema: {
+      tabId: z.string().optional(),
+      clearAll: z.boolean().optional(),
+      query: z.string().optional(),
+      showFilterPanel: z.boolean().optional(),
+      appBrowserOnly: z.boolean().optional(),
+      resourceFilter: z.enum(['all', 'fetch', 'doc', 'css', 'js', 'font', 'img', 'media', 'manifest', 'socket', 'wasm', 'other']).optional(),
+      selectedDomains: z.array(z.string()).optional(),
+      regexQuery: z.string().optional(),
+      endpointPrefixes: z.array(z.string()).optional(),
+      displayReplacements: z.array(z.object({
+        match: z.string(),
+        replace: z.string()
+      })).optional(),
+      methodFilter: z.string().optional(),
+      minDurationMs: z.number().int().nonnegative().nullable().optional(),
+      maxDurationMs: z.number().int().nonnegative().nullable().optional()
+    }
+  },
+  async (input) => {
+    try {
+      return ok(await updateCaptureTabFiltersData(input))
+    } catch (error) {
+      return fail(error)
+    }
+  }
 )
 
 server.registerTool(
@@ -541,6 +589,32 @@ async function getWorkspaceStateData(): Promise<WorkspaceState> {
 
 async function loadWorkspaceData(workspaceId: string): Promise<WorkspaceSnapshot> {
   return bridgeCall('loadWorkspace', { workspaceId }, () => workspaceStore.load(workspaceId))
+}
+
+async function getCaptureTabsStateData(): Promise<CaptureTabsState> {
+  if (!await bridgeClient.isAvailable()) throw new Error('Steal GUI bridge is not available. Open the Steal app to manage capture tab filters.')
+  return bridgeClient.call<CaptureTabsState>('listCaptureTabs')
+}
+
+async function updateCaptureTabFiltersData(
+  input: {
+    tabId?: string
+    clearAll?: boolean
+    query?: string
+    showFilterPanel?: boolean
+    appBrowserOnly?: boolean
+    resourceFilter?: WorkspaceCaptureTab['filters']['resourceFilter']
+    selectedDomains?: string[]
+    regexQuery?: string
+    endpointPrefixes?: string[]
+    displayReplacements?: Array<{ match: string; replace: string }>
+    methodFilter?: string
+    minDurationMs?: number | null
+    maxDurationMs?: number | null
+  }
+): Promise<CaptureTabsState> {
+  if (!await bridgeClient.isAvailable()) throw new Error('Steal GUI bridge is not available. Open the Steal app to manage capture tab filters.')
+  return bridgeClient.call<CaptureTabsState>('updateCaptureTabFilters', input)
 }
 
 async function bridgeCall<T>(method: string, params: unknown, fallback: () => Promise<T>): Promise<T> {

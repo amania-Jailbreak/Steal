@@ -5,8 +5,12 @@ import type { WorkspaceRecord, WorkspaceSnapshot, WorkspaceState } from '../shar
 
 type WorkspaceIndex = {
   lastWorkspaceId?: string
+  lastSessionWorkspaceId?: string
   workspaces: WorkspaceRecord[]
 }
+
+const LAST_SESSION_WORKSPACE_ID = '__last_session__'
+const LAST_SESSION_WORKSPACE_NAME = 'Previous Session'
 
 export class WorkspaceStore {
   private readonly indexPath: string
@@ -23,8 +27,11 @@ export class WorkspaceStore {
   async getState(): Promise<WorkspaceState> {
     const index = await this.readIndex()
     return {
-      workspaces: index.workspaces.sort((left, right) => (right.lastOpenedAt || right.updatedAt).localeCompare(left.lastOpenedAt || left.updatedAt)),
-      lastWorkspaceId: index.lastWorkspaceId
+      workspaces: index.workspaces
+        .filter((workspace) => workspace.id !== LAST_SESSION_WORKSPACE_ID)
+        .sort((left, right) => (right.lastOpenedAt || right.updatedAt).localeCompare(left.lastOpenedAt || left.updatedAt)),
+      lastWorkspaceId: index.lastWorkspaceId,
+      lastSessionWorkspaceId: index.lastSessionWorkspaceId
     }
   }
 
@@ -59,10 +66,29 @@ export class WorkspaceStore {
     return snapshot
   }
 
+  async saveLastSession(payload: { tabs: WorkspaceSnapshot['tabs']; activeCaptureTabId: string }): Promise<WorkspaceSnapshot> {
+    const index = await this.readIndex()
+    const existing = index.workspaces.find((workspace) => workspace.id === LAST_SESSION_WORKSPACE_ID)
+    const now = new Date().toISOString()
+    const snapshot: WorkspaceSnapshot = {
+      id: LAST_SESSION_WORKSPACE_ID,
+      name: LAST_SESSION_WORKSPACE_NAME,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      lastOpenedAt: now,
+      tabs: payload.tabs,
+      activeCaptureTabId: payload.activeCaptureTabId
+    }
+    await this.writeSnapshot(snapshot)
+    await this.touchIndex(snapshot, { sessionOnly: true })
+    return snapshot
+  }
+
   async delete(workspaceId: string): Promise<WorkspaceState> {
     const index = await this.readIndex()
     const nextIndex: WorkspaceIndex = {
       lastWorkspaceId: index.lastWorkspaceId === workspaceId ? undefined : index.lastWorkspaceId,
+      lastSessionWorkspaceId: index.lastSessionWorkspaceId === workspaceId ? undefined : index.lastSessionWorkspaceId,
       workspaces: index.workspaces.filter((workspace) => workspace.id !== workspaceId)
     }
     await writeFile(this.indexPath, JSON.stringify(nextIndex, null, 2))
@@ -76,6 +102,7 @@ export class WorkspaceStore {
       const parsed = JSON.parse(raw) as Partial<WorkspaceIndex>
       return {
         lastWorkspaceId: parsed.lastWorkspaceId,
+        lastSessionWorkspaceId: parsed.lastSessionWorkspaceId,
         workspaces: Array.isArray(parsed.workspaces) ? parsed.workspaces : []
       }
     } catch {
@@ -85,7 +112,7 @@ export class WorkspaceStore {
     }
   }
 
-  private async touchIndex(snapshot: WorkspaceSnapshot): Promise<void> {
+  private async touchIndex(snapshot: WorkspaceSnapshot, options?: { sessionOnly?: boolean }): Promise<void> {
     const index = await this.readIndex()
     const nextRecord: WorkspaceRecord = {
       id: snapshot.id,
@@ -99,7 +126,8 @@ export class WorkspaceStore {
       ...index.workspaces.filter((workspace) => workspace.id !== snapshot.id)
     ]
     await writeFile(this.indexPath, JSON.stringify({
-      lastWorkspaceId: snapshot.id,
+      lastWorkspaceId: options?.sessionOnly ? index.lastWorkspaceId : snapshot.id,
+      lastSessionWorkspaceId: snapshot.id === LAST_SESSION_WORKSPACE_ID ? snapshot.id : index.lastSessionWorkspaceId,
       workspaces: nextWorkspaces
     } satisfies WorkspaceIndex, null, 2))
   }

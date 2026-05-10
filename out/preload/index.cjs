@@ -37,6 +37,9 @@ const api = {
   loadWorkspace: (workspaceId) => electron.ipcRenderer.invoke("workspaces:load", workspaceId),
   saveWorkspace: (payload) => electron.ipcRenderer.invoke("workspaces:save", payload),
   deleteWorkspace: (workspaceId) => electron.ipcRenderer.invoke("workspaces:delete", workspaceId),
+  syncCaptureTabsState: (state) => {
+    electron.ipcRenderer.send("capture-tabs:sync", state);
+  },
   minimizeWindow: () => electron.ipcRenderer.invoke("window:minimize"),
   toggleMaximizeWindow: () => electron.ipcRenderer.invoke("window:toggle-maximize"),
   closeWindow: () => electron.ipcRenderer.invoke("window:close"),
@@ -59,6 +62,11 @@ const api = {
     const listener = (_event, theme) => callback(theme);
     electron.ipcRenderer.on("theme:changed", listener);
     return () => electron.ipcRenderer.removeListener("theme:changed", listener);
+  },
+  onCaptureTabsStateApplied: (callback) => {
+    const listener = (_event, state) => callback(state);
+    electron.ipcRenderer.on("capture-tabs:apply-state", listener);
+    return () => electron.ipcRenderer.removeListener("capture-tabs:apply-state", listener);
   },
   listPlugins: () => electron.ipcRenderer.invoke("plugins:list"),
   enablePlugin: (name) => electron.ipcRenderer.invoke("plugins:enable", name),

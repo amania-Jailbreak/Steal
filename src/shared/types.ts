@@ -148,6 +148,11 @@ export interface AppSettings {
   autoOpenLastWorkspace: boolean
 }
 
+export interface CaptureReplacementRule {
+  match: string
+  replace: string
+}
+
 export type WorkspaceCaptureTabKind = 'live' | 'live-view' | 'snapshot' | 'har'
 
 export interface WorkspaceCaptureFilters {
@@ -156,6 +161,12 @@ export interface WorkspaceCaptureFilters {
   appBrowserOnly: boolean
   resourceFilter: 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
   selectedDomains: string[]
+  regexQuery?: string
+  endpointPrefixes?: string[]
+  displayReplacements?: CaptureReplacementRule[]
+  methodFilter?: string
+  minDurationMs?: number
+  maxDurationMs?: number
 }
 
 export interface WorkspaceCaptureTab {
@@ -182,6 +193,12 @@ export interface WorkspaceSnapshot extends WorkspaceRecord {
 export interface WorkspaceState {
   workspaces: WorkspaceRecord[]
   lastWorkspaceId?: string
+  lastSessionWorkspaceId?: string
+}
+
+export interface CaptureTabsState {
+  tabs: WorkspaceCaptureTab[]
+  activeCaptureTabId: string
 }
 
 export interface AppApi {
@@ -221,6 +238,7 @@ export interface AppApi {
   loadWorkspace: (workspaceId: string) => Promise<WorkspaceSnapshot>
   saveWorkspace: (payload: { workspaceId?: string; name: string; tabs: WorkspaceCaptureTab[]; activeCaptureTabId: string }) => Promise<WorkspaceSnapshot>
   deleteWorkspace: (workspaceId: string) => Promise<WorkspaceState>
+  syncCaptureTabsState: (state: CaptureTabsState) => void
   minimizeWindow: () => Promise<void>
   toggleMaximizeWindow: () => Promise<boolean>
   closeWindow: () => Promise<void>
@@ -228,6 +246,7 @@ export interface AppApi {
   onCapturesChanged: (callback: (captures: CapturedExchange[]) => void) => () => void
   onProxyStatus: (callback: (status: ProxyStatus) => void) => () => void
   onThemeChanged: (callback: (theme: AppTheme) => void) => () => void
+  onCaptureTabsStateApplied: (callback: (state: CaptureTabsState) => void) => () => void
   
   listPlugins: () => Promise<Array<{ name: string; version: string; description?: string; author?: string; enabled: boolean }>>
   enablePlugin: (name: string) => Promise<void>

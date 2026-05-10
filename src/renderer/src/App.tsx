@@ -5,8 +5,8 @@ import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import xml from 'highlight.js/lib/languages/xml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
-import { Activity, ArrowLeft, ArrowRight, Check, ChevronRight, Clock3, Eye, EyeOff, FileDown, FilePlus2, FileUp, Folder, FolderOpen, Funnel, History, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RadioTower, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
-import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection, WorkspaceCaptureTab, WorkspaceRecord, WorkspaceSnapshot, WorkspaceState } from '../../shared/types'
+import { Activity, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Clock3, Eye, EyeOff, FileDown, FilePlus2, FileUp, Folder, FolderOpen, Funnel, History, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RadioTower, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
+import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CaptureReplacementRule, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection, WorkspaceCaptureTab, WorkspaceRecord, WorkspaceSnapshot, WorkspaceState } from '../../shared/types'
 import './styles.css'
 
 type AppMode = 'start' | 'capture' | 'collection' | 'settings'
@@ -16,6 +16,7 @@ type CodeLanguage = 'json' | 'javascript' | 'xml' | 'plaintext'
 type RequestEditorTab = 'query' | 'headers' | 'body'
 type ResponseViewerTab = 'headers' | 'body' | 'diff' | 'metrics'
 type SettingsCategory = 'startup' | 'browser' | 'theme' | 'plugins'
+type DetailFilterSection = 'search' | 'display' | 'network'
 type CollectionSettingsTab = 'variables' | 'headers' | 'cookies' | 'user-agent'
 type ResourceFilter = 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
 type KeyValueRow = { id: string; key: string; value: string; enabled: boolean }
@@ -29,6 +30,12 @@ type CaptureFilters = {
   appBrowserOnly: boolean
   resourceFilter: ResourceFilter
   selectedDomains: string[]
+  regexQuery: string
+  endpointPrefixes: string[]
+  displayReplacements: CaptureReplacementRule[]
+  methodFilter: string
+  minDurationMs?: number
+  maxDurationMs?: number
 }
 type CaptureTabKind = WorkspaceCaptureTab['kind']
 type CaptureTab = {
@@ -39,6 +46,8 @@ type CaptureTab = {
   captures?: CapturedExchange[]
 }
 type SaveWorkspaceState = { workspaceId?: string; name: string }
+
+const LAST_SESSION_WORKSPACE_ID = '__last_session__'
 
 hljs.registerLanguage('javascript', javascript)
 hljs.registerLanguage('json', json)
@@ -82,12 +91,18 @@ const resourceFilters: Array<{ id: ResourceFilter; label: string }> = [
   { id: 'other', label: 'Other' }
 ]
 
+const methodFilterOptions = ['all', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD']
+
 const defaultCaptureFilters: CaptureFilters = {
   query: '',
   showFilterPanel: false,
   appBrowserOnly: false,
   resourceFilter: 'all',
-  selectedDomains: []
+  selectedDomains: [],
+  regexQuery: '',
+  endpointPrefixes: [],
+  displayReplacements: [],
+  methodFilter: 'all'
 }
 
 const liveCaptureTab: CaptureTab = {
@@ -186,7 +201,7 @@ export default function App(): JSX.Element {
   const [collections, setCollections] = useState<SavedCollection[]>([])
   const [savedApis, setSavedApis] = useState<SavedApi[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([])
-  const [lastWorkspaceId, setLastWorkspaceId] = useState<string>()
+  const [lastSessionWorkspaceId, setLastSessionWorkspaceId] = useState<string>()
   const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string>()
   const [currentWorkspaceName, setCurrentWorkspaceName] = useState<string>()
   const [selectedId, setSelectedId] = useState<string>()
@@ -244,6 +259,9 @@ export default function App(): JSX.Element {
   const [focusHint, setFocusHint] = useState<FocusHint>()
   const [startupReady, setStartupReady] = useState(false)
   const [saveWorkspaceState, setSaveWorkspaceState] = useState<SaveWorkspaceState>()
+  const [showAdvancedFilterModal, setShowAdvancedFilterModal] = useState(false)
+  const [detailFilterSection, setDetailFilterSection] = useState<DetailFilterSection>('search')
+  const [displayReplacementRows, setDisplayReplacementRows] = useState<KeyValueRow[]>([])
   const showBrowserTraffic = settings.browserMode === 'chrome' || showBrowser
 
   useEffect(() => {
@@ -270,6 +288,27 @@ export default function App(): JSX.Element {
       removeStatus()
     }
   }, [showBrowserTraffic])
+
+  useEffect(() => {
+    window.steal.syncCaptureTabsState({
+      tabs: serializeCaptureTabsForWorkspace(),
+      activeCaptureTabId
+    })
+  }, [activeCaptureTabId, captureTabs])
+
+  useEffect(() => {
+    return window.steal.onCaptureTabsStateApplied((state) => {
+      setCaptureTabs(state.tabs.map((captureTab) => ({
+        id: captureTab.id,
+        title: captureTab.title,
+        kind: captureTab.kind,
+        filters: normalizeCaptureFilters(captureTab.filters),
+        captures: captureTab.captures
+      })))
+      setActiveCaptureTabId(state.activeCaptureTabId)
+      setSelectedId(undefined)
+    })
+  }, [])
 
   useEffect(() => {
     let timer: number | undefined
@@ -356,8 +395,8 @@ export default function App(): JSX.Element {
       setThemePresets(nextThemePresets)
       setThemeHotReload(hotReloadEnabled)
       applyWorkspaceState(workspaceState)
-      if (nextSettings.autoOpenLastWorkspace && workspaceState.lastWorkspaceId) {
-        await openWorkspace(workspaceState.lastWorkspaceId).catch(() => {
+      if (nextSettings.autoOpenLastWorkspace && workspaceState.lastSessionWorkspaceId) {
+        await openWorkspace(workspaceState.lastSessionWorkspaceId).catch(() => {
           setActiveMode('start')
         })
       } else {
@@ -398,7 +437,17 @@ export default function App(): JSX.Element {
   const appBrowserOnly = activeCaptureFilters.appBrowserOnly
   const resourceFilter = activeCaptureFilters.resourceFilter
   const selectedDomains = useMemo(() => new Set(activeCaptureFilters.selectedDomains), [activeCaptureFilters.selectedDomains])
+  const regexQuery = activeCaptureFilters.regexQuery
+  const endpointPrefixes = activeCaptureFilters.endpointPrefixes
+  const displayReplacements = activeCaptureFilters.displayReplacements
+  const methodFilter = activeCaptureFilters.methodFilter
+  const minDurationMs = activeCaptureFilters.minDurationMs
+  const maxDurationMs = activeCaptureFilters.maxDurationMs
   const tabCaptures = activeCaptureTab.kind === 'live' || activeCaptureTab.kind === 'live-view' ? captures : activeCaptureTab.captures || []
+  const compiledRegex = useMemo(() => compileCaptureRegex(regexQuery), [regexQuery])
+  const hasBasicFilters = showFilterPanel && (query || selectedDomains.size > 0 || appBrowserOnly || resourceFilter !== 'all')
+  const hasAdvancedFilters = Boolean(regexQuery.trim() || endpointPrefixes.length > 0 || displayReplacements.length > 0 || methodFilter !== 'all' || minDurationMs !== undefined || maxDurationMs !== undefined)
+  const rowSearchTokens = showFilterPanel ? searchTokens(query) : []
 
   const selected = useMemo(() => {
     return tabCaptures.find((capture) => capture.id === selectedId && (showBrowserTraffic || capture.source !== 'browser'))
@@ -411,20 +460,26 @@ export default function App(): JSX.Element {
 
   const filteredCaptures = useMemo(() => {
     const tokens = searchTokens(query)
-
-    if (!showFilterPanel) {
-      return showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser')
-    }
-
     return tabCaptures.filter((capture) => {
       if (!showBrowserTraffic && capture.source === 'browser') return false
+      if (!matchesAdvancedFilters(capture, {
+        regexQuery,
+        endpointPrefixes,
+        methodFilter,
+        minDurationMs,
+        maxDurationMs
+      }, compiledRegex)) return false
+      if (!showFilterPanel) return true
       if (appBrowserOnly && showBrowserTraffic && capture.source !== 'browser') return false
       if (resourceFilter !== 'all' && classifyResource(capture) !== resourceFilter) return false
       const domain = domainFromCapture(capture)
       if (selectedDomains.size > 0 && !selectedDomains.has(domain)) return false
-      return tokens.length === 0 || captureMatchesQuery(capture, tokens)
+      return tokens.length === 0 || captureMatchesQuery(capture, tokens, {
+        endpointPrefixes,
+        displayReplacements
+      })
     })
-  }, [appBrowserOnly, query, resourceFilter, selectedDomains, showBrowserTraffic, showFilterPanel, tabCaptures])
+  }, [appBrowserOnly, compiledRegex, displayReplacements, endpointPrefixes, maxDurationMs, methodFilter, minDurationMs, query, regexQuery, resourceFilter, selectedDomains, showBrowserTraffic, showFilterPanel, tabCaptures])
 
   const visibleCaptureWindow = useMemo(() => {
     const startIndex = Math.max(0, Math.floor(captureTableScrollTop / CAPTURE_ROW_HEIGHT) - CAPTURE_ROW_OVERSCAN)
@@ -439,7 +494,14 @@ export default function App(): JSX.Element {
 
   const availableDomains = useMemo(() => {
     const counts = new Map<string, number>()
-    let baseCaptures = showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser')
+    let baseCaptures = (showBrowserTraffic ? tabCaptures : tabCaptures.filter((capture) => capture.source !== 'browser'))
+      .filter((capture) => matchesAdvancedFilters(capture, {
+        regexQuery,
+        endpointPrefixes,
+        methodFilter,
+        minDurationMs,
+        maxDurationMs
+      }, compiledRegex))
     if (showFilterPanel && appBrowserOnly) {
       baseCaptures = baseCaptures.filter((capture) => capture.source === 'browser')
     }
@@ -453,7 +515,7 @@ export default function App(): JSX.Element {
     return Array.from(counts.entries())
       .map(([domain, count]) => ({ domain, count }))
       .sort((left, right) => left.domain.localeCompare(right.domain))
-  }, [appBrowserOnly, resourceFilter, showBrowserTraffic, showFilterPanel, tabCaptures])
+  }, [appBrowserOnly, compiledRegex, endpointPrefixes, maxDurationMs, methodFilter, minDurationMs, regexQuery, resourceFilter, showBrowserTraffic, showFilterPanel, tabCaptures])
 
   const selectedCollection = useMemo(() => {
     return collections.find((collection) => collection.id === selectedCollectionId) || collections[0]
@@ -518,12 +580,17 @@ export default function App(): JSX.Element {
     const element = captureTableRef.current
     if (element) element.scrollTop = 0
     setCaptureTableScrollTop(0)
-  }, [activeCaptureTabId, appBrowserOnly, query, resourceFilter, selectedDomains, showFilterPanel])
+  }, [activeCaptureTabId, appBrowserOnly, displayReplacements, endpointPrefixes, maxDurationMs, methodFilter, minDurationMs, query, regexQuery, resourceFilter, selectedDomains, showFilterPanel])
+
+  useEffect(() => {
+    if (!showAdvancedFilterModal) return
+    setDisplayReplacementRows(replacementRulesToRows(displayReplacements))
+  }, [activeCaptureTabId, showAdvancedFilterModal])
 
   function updateActiveCaptureFilters(patch: Partial<CaptureFilters>): void {
     setCaptureTabs((current) => current.map((captureTab) => (
       captureTab.id === activeCaptureTabId
-        ? { ...captureTab, filters: { ...captureTab.filters, ...patch } }
+        ? { ...captureTab, filters: normalizeCaptureFilters({ ...captureTab.filters, ...patch }) }
         : captureTab
     )))
   }
@@ -548,6 +615,31 @@ export default function App(): JSX.Element {
 
   function setSelectedDomains(value: Set<string>): void {
     updateActiveCaptureFilters({ selectedDomains: Array.from(value) })
+  }
+
+  function setRegexQuery(value: string): void {
+    updateActiveCaptureFilters({ regexQuery: value })
+  }
+
+  function setEndpointPrefixesFromText(value: string): void {
+    updateActiveCaptureFilters({ endpointPrefixes: normalizeEndpointPrefixes(value.split(/\r?\n/)) })
+  }
+
+  function setDisplayReplacementRowsAndFilters(rows: KeyValueRow[]): void {
+    setDisplayReplacementRows(rows)
+    updateActiveCaptureFilters({ displayReplacements: rowsToReplacementRules(rows) })
+  }
+
+  function setMethodFilter(value: string): void {
+    updateActiveCaptureFilters({ methodFilter: value })
+  }
+
+  function setMinDurationFilter(value: string): void {
+    updateActiveCaptureFilters({ minDurationMs: parseOptionalNumber(value) })
+  }
+
+  function setMaxDurationFilter(value: string): void {
+    updateActiveCaptureFilters({ maxDurationMs: parseOptionalNumber(value) })
   }
 
   useEffect(() => {
@@ -588,7 +680,7 @@ export default function App(): JSX.Element {
 
   function applyWorkspaceState(nextState: WorkspaceState): void {
     setWorkspaces(nextState.workspaces)
-    setLastWorkspaceId(nextState.lastWorkspaceId)
+    setLastSessionWorkspaceId(nextState.lastSessionWorkspaceId)
   }
 
   function serializeCaptureTabsForWorkspace(): WorkspaceCaptureTab[] {
@@ -596,13 +688,7 @@ export default function App(): JSX.Element {
       id: captureTab.id,
       title: captureTab.title,
       kind: captureTab.kind,
-      filters: {
-        query: captureTab.filters.query,
-        showFilterPanel: captureTab.filters.showFilterPanel,
-        appBrowserOnly: captureTab.filters.appBrowserOnly,
-        resourceFilter: captureTab.filters.resourceFilter,
-        selectedDomains: [...captureTab.filters.selectedDomains]
-      },
+      filters: normalizeCaptureFilters(captureTab.filters),
       captures: captureTab.kind === 'live' || captureTab.kind === 'live-view' ? undefined : captureTab.captures
     }))
   }
@@ -612,18 +698,12 @@ export default function App(): JSX.Element {
       id: captureTab.id,
       title: captureTab.title,
       kind: captureTab.kind,
-      filters: {
-        query: captureTab.filters.query,
-        showFilterPanel: captureTab.filters.showFilterPanel,
-        appBrowserOnly: captureTab.filters.appBrowserOnly,
-        resourceFilter: captureTab.filters.resourceFilter,
-        selectedDomains: [...captureTab.filters.selectedDomains]
-      },
+      filters: normalizeCaptureFilters(captureTab.filters),
       captures: captureTab.captures
     })))
     setActiveCaptureTabId(snapshot.activeCaptureTabId)
-    setCurrentWorkspaceId(snapshot.id)
-    setCurrentWorkspaceName(snapshot.name)
+    setCurrentWorkspaceId(snapshot.id === LAST_SESSION_WORKSPACE_ID ? undefined : snapshot.id)
+    setCurrentWorkspaceName(snapshot.id === LAST_SESSION_WORKSPACE_ID ? undefined : snapshot.name)
     setActiveMode('capture')
     setSelectedId(undefined)
   }
@@ -757,7 +837,7 @@ export default function App(): JSX.Element {
         id,
         title,
         kind,
-        filters: { ...defaultCaptureFilters },
+        filters: normalizeCaptureFilters(),
         captures: tabCaptureList
       }
     ])
@@ -791,8 +871,10 @@ export default function App(): JSX.Element {
       title: `${tab.title} Copy`,
       kind: tab.kind === 'live' ? 'live-view' : tab.kind,
       filters: {
-        ...tab.filters,
-        selectedDomains: [...tab.filters.selectedDomains]
+        ...normalizeCaptureFilters(tab.filters),
+        selectedDomains: [...tab.filters.selectedDomains],
+        endpointPrefixes: [...tab.filters.endpointPrefixes],
+        displayReplacements: tab.filters.displayReplacements.map((rule) => ({ ...rule }))
       },
       captures: tab.kind === 'live' || tab.kind === 'live-view' ? undefined : [...(tab.captures || [])]
     }
@@ -948,6 +1030,11 @@ export default function App(): JSX.Element {
     setAppBrowserOnly(false)
     setResourceFilter('all')
     setSelectedDomains(new Set())
+    setRegexQuery('')
+    setMethodFilter('all')
+    setEndpointPrefixesFromText('')
+    setMinDurationFilter('')
+    setMaxDurationFilter('')
   }
 
   function openSavePopup(capture: CapturedExchange): void {
@@ -1163,8 +1250,8 @@ export default function App(): JSX.Element {
           <strong>{modeTitle(activeMode)}</strong>
           <span>{modeSummary(activeMode, filteredCaptures.length, tabCaptures.length, collections.length, savedApis.length)}</span>
           {activeMode === 'capture' && (
-            <em className={showFilterPanel && (query || selectedDomains.size > 0 || appBrowserOnly || resourceFilter !== 'all') ? 'summary-chip active' : 'summary-chip'}>
-              {showFilterPanel ? 'Filter ON' : 'Filter OFF'}
+            <em className={showFilterPanel || hasAdvancedFilters ? 'summary-chip active' : 'summary-chip'}>
+              {showFilterPanel || hasAdvancedFilters ? 'Filter ON' : 'Filter OFF'}
             </em>
           )}
         </div>
@@ -1232,12 +1319,12 @@ export default function App(): JSX.Element {
                         <span>Start from a clean live capture layout.</span>
                       </div>
                     </button>
-                    {lastWorkspaceId && (
-                      <button className="start-action-card" onClick={() => void openWorkspace(lastWorkspaceId)}>
+                    {lastSessionWorkspaceId && (
+                      <button className="start-action-card" onClick={() => void openWorkspace(lastSessionWorkspaceId)}>
                         <History size={18} />
                         <div>
                           <strong>Open Last Workspace</strong>
-                          <span>Resume the most recent saved session.</span>
+                          <span>Resume the previous capture session.</span>
                         </div>
                       </button>
                     )}
@@ -1378,7 +1465,7 @@ export default function App(): JSX.Element {
                       <CaptureTabIcon kind={captureTab.kind} />
                     </span>
                     <strong>{captureTab.title}</strong>
-                    {captureTab.filters.showFilterPanel && <span className="capture-tab-dot" />}
+                    {captureTab.filters.showFilterPanel || hasAdvancedCaptureFilters(captureTab.filters) ? <span className="capture-tab-dot" /> : null}
                     {captureTab.id !== 'live' && (
                       <span
                         className="capture-tab-close"
@@ -1414,13 +1501,22 @@ export default function App(): JSX.Element {
                     {settings.browserMode === 'chrome' ? <Eye size={15} /> : embeddedBrowserVisible ? <Eye size={15} /> : <EyeOff size={15} />}
                     {settings.browserMode === 'chrome' ? 'Chrome' : 'Browser'}
                   </button>
-                  <button
-                    className={showFilterPanel ? 'filter-toggle active' : 'filter-toggle'}
-                    title="Filters"
-                    onClick={() => setShowFilterPanel((current) => !current)}
-                  >
-                    <Funnel size={15} />
-                  </button>
+                  <div className="filter-toggle-group">
+                    <button
+                      className={showFilterPanel ? 'filter-toggle active' : 'filter-toggle'}
+                      title="Filters"
+                      onClick={() => setShowFilterPanel((current) => !current)}
+                    >
+                      <Funnel size={15} />
+                    </button>
+                    <button
+                      className={hasAdvancedFilters ? 'filter-toggle detail-filter-toggle active' : 'filter-toggle detail-filter-toggle'}
+                      title="Detail filters"
+                      onClick={() => setShowAdvancedFilterModal(true)}
+                    >
+                      <ChevronDown size={15} />
+                    </button>
+                  </div>
                   <button
                     className={status.capturePaused ? 'capture-pause active' : 'capture-pause'}
                     title={status.capturePaused ? 'Resume capture logging' : 'Pause capture logging'}
@@ -1448,7 +1544,7 @@ export default function App(): JSX.Element {
                           >
                             <Monitor size={14} />
                           </button>
-                          {(query || selectedDomains.size > 0 || appBrowserOnly || resourceFilter !== 'all') && <button title="Clear filters" onClick={clearFilters}><X size={14} /></button>}
+                          {(hasBasicFilters || hasAdvancedFilters) && <button title="Clear filters" onClick={clearFilters}><X size={14} /></button>}
                         </div>
                       </div>
                       <label className="filter-search">
@@ -1515,7 +1611,17 @@ export default function App(): JSX.Element {
                         >
                           <span className={`method ${capture.method.toLowerCase()}`}>{capture.method}</span>
                           <img className="capture-favicon" src={faviconUrl(capture.url)} alt="" loading="lazy" />
-                          <span className="url-cell">{highlightText(capture.url, searchTokens(query))}</span>
+                          <span className="url-cell" title={capture.url}>
+                            {(() => {
+                              const display = captureListDisplay(capture, endpointPrefixes, displayReplacements)
+                              return (
+                                <>
+                                  <span className="url-cell-primary">{highlightText(display.primary, rowSearchTokens)}</span>
+                                  {display.secondary && <span className="url-cell-secondary">{highlightText(display.secondary, rowSearchTokens)}</span>}
+                                </>
+                              )
+                            })()}
+                          </span>
                           <span>{capture.responseStatusCode || '-'}</span>
                           <span>{capture.durationMs}ms</span>
                           <span>{formatBytes(capture.responseSize)}</span>
@@ -2083,6 +2189,142 @@ export default function App(): JSX.Element {
         </section>
       )}
 
+      {showAdvancedFilterModal && (
+        <div className="modal-backdrop" onMouseDown={() => setShowAdvancedFilterModal(false)}>
+          <section className="save-dialog detail-filter-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-filter-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="save-dialog-header">
+              <div>
+                <strong id="detail-filter-title">Detail Filters</strong>
+                <span>Tune search, display cleanup, and network filters for this capture tab.</span>
+              </div>
+              <button title="Close" onClick={() => setShowAdvancedFilterModal(false)}><X size={16} /></button>
+            </div>
+            <div className="detail-filter-layout">
+              <aside className="collection-settings-tabs detail-filter-tabs">
+                <button
+                  className={detailFilterSection === 'search' ? 'settings-category active' : 'settings-category'}
+                  onClick={() => setDetailFilterSection('search')}
+                >
+                  <strong>Search</strong>
+                </button>
+                <button
+                  className={detailFilterSection === 'display' ? 'settings-category active' : 'settings-category'}
+                  onClick={() => setDetailFilterSection('display')}
+                >
+                  <strong>Display</strong>
+                </button>
+                <button
+                  className={detailFilterSection === 'network' ? 'settings-category active' : 'settings-category'}
+                  onClick={() => setDetailFilterSection('network')}
+                >
+                  <strong>Network</strong>
+                </button>
+              </aside>
+              <div className="detail-filter-page">
+                {detailFilterSection === 'search' && (
+                  <>
+                    <div className="collection-settings-page-title">
+                      <strong>Search</strong>
+                      <span>Match captures by regex and narrow the list to a specific API surface.</span>
+                    </div>
+                    <div className="setting-card detail-filter-card detail-filter-card-stack">
+                      <div>
+                        <strong>Regex</strong>
+                        <span>Matches URL, headers, request body, and response body.</span>
+                        {regexQuery.trim() && !compiledRegex && <em className="filter-error">Invalid regular expression.</em>}
+                      </div>
+                      <input
+                        value={regexQuery}
+                        placeholder="token|session|/v1/status"
+                        onChange={(event) => setRegexQuery(event.target.value)}
+                      />
+                    </div>
+                    <div className="setting-card detail-filter-card detail-filter-card-stack">
+                      <div>
+                        <strong>API analysis endpoint prefixes</strong>
+                        <span>One prefix per line. Matching captures stay visible and the prefix is removed from the list display.</span>
+                      </div>
+                      <textarea
+                        value={endpointPrefixes.join('\n')}
+                        placeholder={'api.example.com/v1/\napi.example.com/v2/internal/'}
+                        onChange={(event) => setEndpointPrefixesFromText(event.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
+                {detailFilterSection === 'display' && (
+                  <>
+                    <div className="collection-settings-page-title">
+                      <strong>Display</strong>
+                      <span>Replace obfuscated endpoint fragments with readable labels in the capture list.</span>
+                    </div>
+                    <div className="detail-filter-list-field">
+                      <KeyValueEditor
+                        title="Display Replacements"
+                        rows={displayReplacementRows}
+                        keyPlaceholder="Original"
+                        valuePlaceholder="Label"
+                        keyLabel="Original"
+                        valueLabel="Label"
+                        onChange={setDisplayReplacementRowsAndFilters}
+                      />
+                      <small>Each enabled row replaces the original string in the list and keeps the original as a muted suffix.</small>
+                    </div>
+                  </>
+                )}
+                {detailFilterSection === 'network' && (
+                  <>
+                    <div className="collection-settings-page-title">
+                      <strong>Network</strong>
+                      <span>Filter by HTTP method and response time.</span>
+                    </div>
+                    <div className="setting-card detail-filter-card">
+                      <div>
+                        <strong>Method</strong>
+                        <span>Show only one request method when needed.</span>
+                      </div>
+                      <select value={methodFilter} onChange={(event) => setMethodFilter(event.target.value)}>
+                        {methodFilterOptions.map((item) => (
+                          <option key={item} value={item}>{item === 'all' ? 'All methods' : item}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="setting-card detail-filter-card">
+                      <div>
+                        <strong>Min response time</strong>
+                        <span>Hide faster responses and focus on slower traffic.</span>
+                      </div>
+                      <input
+                        value={minDurationMs === undefined ? '' : String(minDurationMs)}
+                        placeholder="120"
+                        inputMode="numeric"
+                        onChange={(event) => setMinDurationFilter(event.target.value)}
+                      />
+                    </div>
+                    <div className="setting-card detail-filter-card">
+                      <div>
+                        <strong>Max response time</strong>
+                        <span>Hide slower responses above this threshold.</span>
+                      </div>
+                      <input
+                        value={maxDurationMs === undefined ? '' : String(maxDurationMs)}
+                        placeholder="1200"
+                        inputMode="numeric"
+                        onChange={(event) => setMaxDurationFilter(event.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="save-dialog-actions">
+              <button onClick={clearFilters}>Reset Filters</button>
+              <button className="primary-action" onClick={() => setShowAdvancedFilterModal(false)}>Done</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {renameCaptureTabTarget && (
         <div className="modal-backdrop" onMouseDown={() => setRenameCaptureTabTarget(undefined)}>
           <section className="save-dialog rename-tab-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-tab-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -2478,12 +2720,16 @@ function KeyValueEditor({
   rows,
   keyPlaceholder,
   valuePlaceholder,
+  keyLabel = 'Name',
+  valueLabel = 'Value',
   onChange
 }: {
   title: string
   rows: KeyValueRow[]
   keyPlaceholder: string
   valuePlaceholder: string
+  keyLabel?: string
+  valueLabel?: string
   onChange: (rows: KeyValueRow[]) => void
 }): JSX.Element {
   function updateRow(id: string, patch: Partial<KeyValueRow>): void {
@@ -2502,8 +2748,8 @@ function KeyValueEditor({
       </div>
       <div className="kv-grid">
         <span className="kv-heading" />
-        <span className="kv-heading">Name</span>
-        <span className="kv-heading">Value</span>
+        <span className="kv-heading">{keyLabel}</span>
+        <span className="kv-heading">{valueLabel}</span>
         <span className="kv-heading" />
         {rows.map((row) => (
           <div className="kv-row" key={row.id}>
@@ -3215,6 +3461,75 @@ function headerValueToString(value: string | string[] | undefined): string {
   return value || ''
 }
 
+function normalizeCaptureFilters(filters?: Partial<CaptureFilters>): CaptureFilters {
+  return {
+    query: filters?.query || '',
+    showFilterPanel: Boolean(filters?.showFilterPanel),
+    appBrowserOnly: Boolean(filters?.appBrowserOnly),
+    resourceFilter: filters?.resourceFilter || 'all',
+    selectedDomains: Array.isArray(filters?.selectedDomains) ? [...filters!.selectedDomains] : [],
+    regexQuery: filters?.regexQuery || '',
+    endpointPrefixes: normalizeEndpointPrefixes(filters?.endpointPrefixes || []),
+    displayReplacements: normalizeCaptureReplacementRules(filters?.displayReplacements || []),
+    methodFilter: filters?.methodFilter || 'all',
+    minDurationMs: typeof filters?.minDurationMs === 'number' && Number.isFinite(filters.minDurationMs) ? filters.minDurationMs : undefined,
+    maxDurationMs: typeof filters?.maxDurationMs === 'number' && Number.isFinite(filters.maxDurationMs) ? filters.maxDurationMs : undefined
+  }
+}
+
+function hasAdvancedCaptureFilters(filters: Partial<CaptureFilters>): boolean {
+  return Boolean(
+    filters.regexQuery?.trim()
+      || filters.endpointPrefixes?.length
+      || filters.displayReplacements?.length
+      || (filters.methodFilter && filters.methodFilter !== 'all')
+      || filters.minDurationMs !== undefined
+      || filters.maxDurationMs !== undefined
+  )
+}
+
+function normalizeEndpointPrefixes(values: string[]): string[] {
+  return values
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => value.replace(/^https?:\/\//i, '').replace(/\?.*$/, '').replace(/\/{2,}/g, '/'))
+}
+
+function normalizeCaptureReplacementRules(values: CaptureReplacementRule[]): CaptureReplacementRule[] {
+  return values
+    .map((value) => ({
+      match: value.match.trim(),
+      replace: value.replace.trim()
+    }))
+    .filter((value) => value.match && value.replace)
+}
+
+function replacementRulesToRows(values: CaptureReplacementRule[]): KeyValueRow[] {
+  const rows = normalizeCaptureReplacementRules(values).map((value) => ({
+    id: crypto.randomUUID(),
+    key: value.match,
+    value: value.replace,
+    enabled: true
+  }))
+  return rows.length > 0 ? rows : [emptyRow()]
+}
+
+function rowsToReplacementRules(rows: KeyValueRow[]): CaptureReplacementRule[] {
+  return normalizeCaptureReplacementRules(rows
+    .filter((row) => row.enabled)
+    .map((row) => ({
+      match: row.key,
+      replace: row.value
+    })))
+}
+
+function parseOptionalNumber(value: string): number | undefined {
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  const parsed = Number.parseInt(trimmed, 10)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
 function domainFromCapture(capture: CapturedExchange): string {
   if (capture.host) return capture.host
   try {
@@ -3253,8 +3568,18 @@ function classifyResource(capture: CapturedExchange): Exclude<ResourceFilter, 'a
   return 'other'
 }
 
-function captureMatchesQuery(capture: CapturedExchange, tokens: string[]): boolean {
-  const haystack = [
+function compileCaptureRegex(value: string): RegExp | undefined {
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  try {
+    return new RegExp(trimmed, 'i')
+  } catch {
+    return undefined
+  }
+}
+
+function captureSearchText(capture: CapturedExchange, display?: { primary: string; secondary?: string }): string {
+  return [
     capture.method,
     capture.url,
     normalizeUrlForSearch(capture.url),
@@ -3267,8 +3592,77 @@ function captureMatchesQuery(capture: CapturedExchange, tokens: string[]): boole
     JSON.stringify(capture.responseHeaders),
     capture.responseBody,
     capture.startedAt,
-    capture.tags?.join(' ')
-  ].join('\n').toLowerCase()
+    capture.tags?.join(' '),
+    display?.primary,
+    display?.secondary
+  ].join('\n')
+}
+
+function matchesAdvancedFilters(
+  capture: CapturedExchange,
+  filters: Pick<CaptureFilters, 'regexQuery' | 'endpointPrefixes' | 'methodFilter' | 'minDurationMs' | 'maxDurationMs'>,
+  compiledRegex?: RegExp
+): boolean {
+  if (filters.methodFilter !== 'all' && capture.method.toUpperCase() !== filters.methodFilter.toUpperCase()) return false
+  if (filters.minDurationMs !== undefined && capture.durationMs < filters.minDurationMs) return false
+  if (filters.maxDurationMs !== undefined && capture.durationMs > filters.maxDurationMs) return false
+  if (filters.endpointPrefixes.length > 0 && !matchingEndpointPrefix(capture, filters.endpointPrefixes)) return false
+  if (filters.regexQuery.trim()) {
+    if (!compiledRegex) return true
+    if (!compiledRegex.test(captureSearchText(capture))) return false
+  }
+  return true
+}
+
+function captureListLabel(capture: CapturedExchange, endpointPrefixes: string[]): string {
+  const matchedPrefix = matchingEndpointPrefix(capture, endpointPrefixes)
+  if (!matchedPrefix) return capture.url
+  const target = captureEndpointTarget(capture)
+  const remainder = target.slice(matchedPrefix.length).replace(/^\/+/, '')
+  return remainder || '*'
+}
+
+function captureListDisplay(
+  capture: CapturedExchange,
+  endpointPrefixes: string[],
+  displayReplacements: CaptureReplacementRule[]
+): { primary: string; secondary?: string } {
+  const original = captureListLabel(capture, endpointPrefixes)
+  const primary = applyCaptureReplacementRules(original, displayReplacements)
+  return primary !== original
+    ? { primary, secondary: original }
+    : { primary: original }
+}
+
+function captureEndpointTarget(capture: CapturedExchange): string {
+  try {
+    const parsed = new URL(capture.url)
+    return `${parsed.host}${parsed.pathname}`
+  } catch {
+    return `${capture.host}${capture.path.split('?')[0]}`
+  }
+}
+
+function matchingEndpointPrefix(capture: CapturedExchange, prefixes: string[]): string | undefined {
+  const target = captureEndpointTarget(capture)
+  return [...prefixes]
+    .sort((left, right) => right.length - left.length)
+    .find((prefix) => target.startsWith(prefix))
+}
+
+function applyCaptureReplacementRules(value: string, rules: CaptureReplacementRule[]): string {
+  return normalizeCaptureReplacementRules(rules)
+    .sort((left, right) => right.match.length - left.match.length)
+    .reduce((current, rule) => current.split(rule.match).join(rule.replace), value)
+}
+
+function captureMatchesQuery(
+  capture: CapturedExchange,
+  tokens: string[],
+  displayFilters?: Pick<CaptureFilters, 'endpointPrefixes' | 'displayReplacements'>
+): boolean {
+  const display = displayFilters ? captureListDisplay(capture, displayFilters.endpointPrefixes, displayFilters.displayReplacements) : undefined
+  const haystack = captureSearchText(capture, display).toLowerCase()
   return tokens.every((token) => haystack.includes(token))
 }
 

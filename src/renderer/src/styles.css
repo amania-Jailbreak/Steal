@@ -1711,6 +1711,23 @@ button:hover {
   color: var(--theme-primary);
 }
 
+.filter-toggle-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.filter-toggle-group > .filter-toggle:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.detail-filter-toggle {
+  min-width: 28px;
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
 .network-content {
   min-height: 0;
   display: grid;
@@ -1922,9 +1939,29 @@ button:hover {
 }
 
 .url-cell {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.url-cell-primary,
+.url-cell-secondary {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.url-cell-primary {
+  color: var(--theme-text-strong);
+}
+
+.url-cell-secondary {
+  flex: 0 1 auto;
+  font-size: 10px;
+  color: var(--theme-text-muted);
 }
 
 .method {
@@ -2539,6 +2576,26 @@ mark {
   color: var(--theme-text-muted);
 }
 
+.save-dialog-body label > span {
+  color: var(--theme-text-muted);
+  font-weight: 700;
+}
+
+.save-dialog-body label > small,
+.save-dialog-body label > em {
+  font-size: 11px;
+  line-height: 1.45;
+  font-style: normal;
+}
+
+.save-dialog-body label > small {
+  color: var(--theme-text-muted);
+}
+
+.filter-error {
+  color: var(--theme-danger);
+}
+
 .save-dialog-body input {
   width: 100%;
   height: 34px;
@@ -2547,6 +2604,163 @@ mark {
   padding: 0 9px;
   color: var(--theme-text);
   background: var(--theme-surface);
+}
+
+.save-dialog-body select,
+.save-dialog-body textarea {
+  width: 100%;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  padding: 8px 9px;
+  color: var(--theme-text);
+  background: var(--theme-surface);
+}
+
+.save-dialog-body textarea {
+  min-height: 140px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.detail-filter-dialog {
+  width: min(980px, calc(100vw - 44px));
+  min-height: min(720px, calc(100vh - 56px));
+}
+
+.detail-filter-list-field {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+
+.detail-filter-layout {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  flex: 1;
+  overflow: hidden;
+}
+
+.detail-filter-tabs {
+  min-height: 0;
+  border-right: 1px solid var(--theme-border);
+  background: var(--theme-surface-subtle);
+  padding: 8px;
+}
+
+.detail-filter-page {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 26px 32px 40px;
+  background: transparent;
+}
+
+.detail-filter-page > * {
+  max-width: 1080px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.detail-filter-page .collection-settings-page-title {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 16px;
+  padding: 0 2px;
+}
+
+.detail-filter-page .collection-settings-page-title strong {
+  color: var(--theme-text-strong);
+  font-size: 18px;
+}
+
+.detail-filter-page .collection-settings-page-title span {
+  color: var(--theme-text-muted);
+  font-size: 13px;
+}
+
+.detail-filter-card {
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(220px, 380px);
+  align-items: center;
+  gap: 22px;
+  margin-bottom: 0;
+  padding: 16px 0;
+  border: 0;
+  border-bottom: 1px solid var(--theme-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.detail-filter-card > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.detail-filter-card strong {
+  color: var(--theme-text-strong);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.detail-filter-card span {
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.detail-filter-card em.filter-error {
+  color: var(--theme-danger);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.detail-filter-card > input,
+.detail-filter-card > select,
+.detail-filter-card > textarea {
+  width: 100%;
+  border: 1px solid var(--theme-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--theme-text);
+  background: var(--theme-surface);
+}
+
+.detail-filter-card > input:focus,
+.detail-filter-card > select:focus,
+.detail-filter-card > textarea:focus {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: -1px;
+  border-color: var(--theme-primary);
+}
+
+.detail-filter-card > textarea {
+  min-height: 80px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.detail-filter-card-stack {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.detail-filter-card-stack > input,
+.detail-filter-card-stack > textarea {
+  margin-top: 12px;
+}
+}
+
+.detail-filter-card-stack > textarea {
+  min-height: 160px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  padding: 9px;
 }
 
 .collection-settings-layout {

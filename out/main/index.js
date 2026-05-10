@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { mkdirSync, existsSync, readFileSync, readdirSync, writeFileSync, watch } from "node:fs";
-import { P as ProxyService, S as SavedApiStore, a as SettingsStore, W as WorkspaceStore, M as McpBridgeServer, r as resolveStealBridgeFilePath, b as replayRequest } from "./chunks/mcp-bridge-DmR7Ft71.js";
+import { P as ProxyService, S as SavedApiStore, a as SettingsStore, W as WorkspaceStore, M as McpBridgeServer, r as resolveStealBridgeFilePath, b as replayRequest } from "./chunks/mcp-bridge-57cmLjZH.js";
 import { promisify } from "node:util";
 import "node:events";
 import "node:net";
@@ -909,6 +909,10 @@ let themeWatcher;
 let themeReloadTimer;
 let sharedCaptureSyncTimer;
 let mcpBridgeServer;
+let captureTabsState = {
+  tabs: [{ id: "live", title: "Live", kind: "live", filters: { query: "", showFilterPanel: false, appBrowserOnly: false, resourceFilter: "all", selectedDomains: [], regexQuery: "", endpointPrefixes: [], displayReplacements: [], methodFilter: "all" } }],
+  activeCaptureTabId: "live"
+};
 const isDev = !!process.env.ELECTRON_RENDERER_URL;
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -978,9 +982,14 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   if (quitCleanupStarted) return;
   quitCleanupStarted = true;
-  void cleanupBeforeQuit().finally(() => {
-    quitCleanupComplete = true;
-    app.quit();
+  void workspaceStore.saveLastSession({
+    tabs: captureTabsState.tabs,
+    activeCaptureTabId: captureTabsState.activeCaptureTabId
+  }).catch(() => void 0).finally(() => {
+    void cleanupBeforeQuit().finally(() => {
+      quitCleanupComplete = true;
+      app.quit();
+    });
   });
 });
 app.on("certificate-error", (event, webContents, _url, _error, _certificate, callback) => {
@@ -1027,6 +1036,9 @@ function startSharedCaptureSync() {
   }, 1200);
 }
 function registerIpc() {
+  ipcMain.on("capture-tabs:sync", (_event, state) => {
+    captureTabsState = normalizeCaptureTabsState(state);
+  });
   ipcMain.handle("settings:get", () => settingsStore.get());
   ipcMain.handle("settings:update", (_event, patch) => settingsStore.update(patch));
   ipcMain.handle("theme:get", () => themeStore.get());
@@ -1227,6 +1239,13 @@ function registerIpc() {
 }
 function registerMcpBridge() {
   if (!mcpBridgeServer) return;
+  mcpBridgeServer.register("listCaptureTabs", () => captureTabsState);
+  mcpBridgeServer.register("updateCaptureTabFilters", (params) => {
+    const payload = params;
+    captureTabsState = updateCaptureTabsStateFilters(captureTabsState, payload);
+    mainWindow?.webContents.send("capture-tabs:apply-state", captureTabsState);
+    return captureTabsState;
+  });
   mcpBridgeServer.register("getProxyStatus", () => proxyService.getStatus());
   mcpBridgeServer.register("startProxy", () => startProxyWithSystemSetup());
   mcpBridgeServer.register("stopProxy", () => stopProxyWithSystemRestore());
@@ -1264,6 +1283,62 @@ function registerMcpBridge() {
     if (!capture) throw new Error(`Capture not found: ${exchangeId}`);
     return savedApiStore.save(capture, payload.name || "", payload.tags || [], payload.collectionName?.trim() || "Default");
   });
+}
+function normalizeCaptureTabsState(state) {
+  const tabs = Array.isArray(state?.tabs) && state.tabs.length > 0 ? state.tabs.map((tab) => ({
+    ...tab,
+    filters: normalizeWorkspaceCaptureFilters(tab.filters)
+  })) : captureTabsState.tabs;
+  const activeCaptureTabId = tabs.some((tab) => tab.id === state?.activeCaptureTabId) ? state.activeCaptureTabId : tabs[0].id;
+  return { tabs, activeCaptureTabId };
+}
+function updateCaptureTabsStateFilters(state, patch) {
+  const targetId = patch?.tabId || state.activeCaptureTabId;
+  return normalizeCaptureTabsState({
+    ...state,
+    tabs: state.tabs.map((tab) => {
+      if (tab.id !== targetId) return tab;
+      const baseFilters = patch?.clearAll ? normalizeWorkspaceCaptureFilters() : normalizeWorkspaceCaptureFilters(tab.filters);
+      return {
+        ...tab,
+        filters: normalizeWorkspaceCaptureFilters({
+          ...baseFilters,
+          ...patch?.query !== void 0 ? { query: patch.query } : {},
+          ...patch?.showFilterPanel !== void 0 ? { showFilterPanel: patch.showFilterPanel } : {},
+          ...patch?.appBrowserOnly !== void 0 ? { appBrowserOnly: patch.appBrowserOnly } : {},
+          ...patch?.resourceFilter !== void 0 ? { resourceFilter: patch.resourceFilter } : {},
+          ...patch?.selectedDomains !== void 0 ? { selectedDomains: patch.selectedDomains } : {},
+          ...patch?.regexQuery !== void 0 ? { regexQuery: patch.regexQuery } : {},
+          ...patch?.endpointPrefixes !== void 0 ? { endpointPrefixes: patch.endpointPrefixes } : {},
+          ...patch?.displayReplacements !== void 0 ? { displayReplacements: patch.displayReplacements } : {},
+          ...patch?.methodFilter !== void 0 ? { methodFilter: patch.methodFilter } : {},
+          ...patch?.minDurationMs !== void 0 ? { minDurationMs: patch.minDurationMs ?? void 0 } : {},
+          ...patch?.maxDurationMs !== void 0 ? { maxDurationMs: patch.maxDurationMs ?? void 0 } : {}
+        })
+      };
+    })
+  });
+}
+function normalizeWorkspaceCaptureFilters(filters) {
+  return {
+    query: filters?.query || "",
+    showFilterPanel: Boolean(filters?.showFilterPanel),
+    appBrowserOnly: Boolean(filters?.appBrowserOnly),
+    resourceFilter: filters?.resourceFilter || "all",
+    selectedDomains: Array.isArray(filters?.selectedDomains) ? [...filters.selectedDomains] : [],
+    regexQuery: filters?.regexQuery || "",
+    endpointPrefixes: Array.isArray(filters?.endpointPrefixes) ? filters.endpointPrefixes.map((item) => item.trim()).filter(Boolean) : [],
+    displayReplacements: normalizeCaptureReplacementRules(filters?.displayReplacements),
+    methodFilter: filters?.methodFilter || "all",
+    minDurationMs: typeof filters?.minDurationMs === "number" ? filters.minDurationMs : void 0,
+    maxDurationMs: typeof filters?.maxDurationMs === "number" ? filters.maxDurationMs : void 0
+  };
+}
+function normalizeCaptureReplacementRules(rules) {
+  return Array.isArray(rules) ? rules.map((rule) => ({
+    match: String(rule?.match || "").trim(),
+    replace: String(rule?.replace || "").trim()
+  })).filter((rule) => rule.match && rule.replace) : [];
 }
 async function setThemeHotReload(enabled) {
   themeHotReloadEnabled = enabled;
