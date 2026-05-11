@@ -7,16 +7,18 @@ import xml from 'highlight.js/lib/languages/xml'
 import plaintext from 'highlight.js/lib/languages/plaintext'
 import { Activity, ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Clock3, Eye, EyeOff, FileDown, FilePlus2, FileUp, Folder, FolderOpen, Funnel, History, Library, Maximize2, Minimize2, Minus, Monitor, Pause, Play, Plus, RadioTower, RefreshCcw, Save, Search, Send, Settings, ShieldAlert, ShieldCheck, Trash2, X } from 'lucide-react'
 import type { AppPlatform, AppSettings, AppTheme, BrowserMode, CaptureReplacementRule, CapturedExchange, CertificateStatus, CollectionSettings, ProxyStatus, ReplayRequest, ReplayResult, SavedApi, SavedCollection, WorkspaceCaptureTab, WorkspaceRecord, WorkspaceSnapshot, WorkspaceState } from '../../shared/types'
+import type { OpenAPISpec } from '../../shared/openapi-types'
+import { matchEndpointToCapture } from '../../shared/openapi-types'
 import './styles.css'
 
 type AppMode = 'start' | 'capture' | 'collection' | 'settings'
-type DetailTab = 'headers' | 'body' | 'response' | 'messages'
+type DetailTab = 'headers' | 'body' | 'response' | 'messages' | 'api'
 type HeaderMode = 'table' | 'raw'
 type CodeLanguage = 'json' | 'javascript' | 'xml' | 'plaintext'
 type RequestEditorTab = 'query' | 'headers' | 'body'
 type ResponseViewerTab = 'headers' | 'body' | 'diff' | 'metrics'
-type SettingsCategory = 'startup' | 'browser' | 'theme' | 'plugins'
-type DetailFilterSection = 'search' | 'display' | 'network'
+type SettingsCategory = 'startup' | 'browser' | 'theme' | 'plugins' | 'openapi'
+type DetailFilterSection = 'search' | 'display' | 'network' | 'api'
 type CollectionSettingsTab = 'variables' | 'headers' | 'cookies' | 'user-agent'
 type ResourceFilter = 'all' | 'fetch' | 'doc' | 'css' | 'js' | 'font' | 'img' | 'media' | 'manifest' | 'socket' | 'wasm' | 'other'
 type KeyValueRow = { id: string; key: string; value: string; enabled: boolean }
@@ -242,6 +244,9 @@ export default function App(): JSX.Element {
   const [themeHotReload, setThemeHotReload] = useState(false)
   const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('startup')
   const [plugins, setPlugins] = useState<Array<{ name: string; version: string; description?: string; author?: string; enabled: boolean }>>([])
+  const [openAPISpecs, setOpenAPISpecs] = useState<OpenAPISpec[]>([])
+  const [selectedAPITags, setSelectedAPITags] = useState<Set<string>>(new Set())
+  const [selectedAPISpecs, setSelectedAPISpecs] = useState<Set<string>>(new Set())
   const [testRequest, setTestRequest] = useState<ReplayRequest>({ method: 'GET', url: '', headers: {}, body: '' })
   const [testQueryRows, setTestQueryRows] = useState<KeyValueRow[]>([])
   const [testHeaderRows, setTestHeaderRows] = useState<KeyValueRow[]>([])
@@ -414,6 +419,7 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     void window.steal.listPlugins().then(setPlugins)
+    void window.steal.listOpenAPISpecs().then(setOpenAPISpecs)
   }, [])
 
   useEffect(() => {
@@ -474,12 +480,53 @@ export default function App(): JSX.Element {
       if (resourceFilter !== 'all' && classifyResource(capture) !== resourceFilter) return false
       const domain = domainFromCapture(capture)
       if (selectedDomains.size > 0 && !selectedDomains.has(domain)) return false
+      if (selectedAPITags.size > 0 && openAPISpecs.length > 0) {
+        let matchesTag = false
+        for (const spec of openAPISpecs) {
+          for (const endpoint of spec.endpoints) {
+            if (capture.method.toUpperCase() === endpoint.method.toUpperCase() && endpoint.tag && selectedAPITags.has(endpoint.tag)) {
+              try {
+                const pattern = new RegExp(endpoint.pathPattern)
+                if (pattern.test(capture.path)) {
+                  matchesTag = true
+                  break
+                }
+              } catch {
+                continue
+              }
+            }
+          }
+          if (matchesTag) break
+        }
+        if (!matchesTag) return false
+      }
+      if (selectedAPISpecs.size > 0 && openAPISpecs.length > 0) {
+        let matchesSpec = false
+        for (const spec of openAPISpecs) {
+          if (!selectedAPISpecs.has(spec.id)) continue
+          for (const endpoint of spec.endpoints) {
+            if (capture.method.toUpperCase() === endpoint.method.toUpperCase()) {
+              try {
+                const pattern = new RegExp(endpoint.pathPattern)
+                if (pattern.test(capture.path)) {
+                  matchesSpec = true
+                  break
+                }
+              } catch {
+                continue
+              }
+            }
+          }
+          if (matchesSpec) break
+        }
+        if (!matchesSpec) return false
+      }
       return tokens.length === 0 || captureMatchesQuery(capture, tokens, {
         endpointPrefixes,
         displayReplacements
       })
     })
-  }, [appBrowserOnly, compiledRegex, displayReplacements, endpointPrefixes, maxDurationMs, methodFilter, minDurationMs, query, regexQuery, resourceFilter, selectedDomains, showBrowserTraffic, showFilterPanel, tabCaptures])
+  }, [appBrowserOnly, compiledRegex, displayReplacements, endpointPrefixes, maxDurationMs, methodFilter, minDurationMs, openAPISpecs, query, regexQuery, resourceFilter, selectedAPISpecs, selectedAPITags, selectedDomains, showBrowserTraffic, showFilterPanel, tabCaptures])
 
   const visibleCaptureWindow = useMemo(() => {
     const startIndex = Math.max(0, Math.floor(captureTableScrollTop / CAPTURE_ROW_HEIGHT) - CAPTURE_ROW_OVERSCAN)
@@ -516,6 +563,31 @@ export default function App(): JSX.Element {
       .map(([domain, count]) => ({ domain, count }))
       .sort((left, right) => left.domain.localeCompare(right.domain))
   }, [appBrowserOnly, compiledRegex, endpointPrefixes, maxDurationMs, methodFilter, minDurationMs, regexQuery, resourceFilter, showBrowserTraffic, showFilterPanel, tabCaptures])
+
+  const availableAPITags = useMemo(() => {
+    if (openAPISpecs.length === 0) return []
+    const counts = new Map<string, number>()
+    for (const capture of tabCaptures) {
+      for (const spec of openAPISpecs) {
+        for (const endpoint of spec.endpoints) {
+          if (capture.method.toUpperCase() === endpoint.method.toUpperCase()) {
+            try {
+              const pattern = new RegExp(`^${endpoint.pathPattern}$`)
+              if (pattern.test(capture.path) && endpoint.tag) {
+                counts.set(endpoint.tag, (counts.get(endpoint.tag) || 0) + 1)
+              }
+            } catch {
+              continue
+            }
+          }
+        }
+      }
+    }
+    return Array.from(counts.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((left, right) => left.tag.localeCompare(right.tag))
+  }, [openAPISpecs, tabCaptures])
+
 
   const selectedCollection = useMemo(() => {
     return collections.find((collection) => collection.id === selectedCollectionId) || collections[0]
@@ -987,6 +1059,27 @@ export default function App(): JSX.Element {
     setPlugins(updatedPlugins)
   }
 
+  async function importOpenAPISpec(): Promise<void> {
+    const result = await window.steal.importOpenAPISpec()
+    
+    if (result.success && result.spec) {
+      setMessage(`OpenAPI spec "${result.spec.name}" imported successfully.`)
+      const specs = await window.steal.listOpenAPISpecs()
+      setOpenAPISpecs(specs)
+    } else if (result.error) {
+      setMessage(`Failed to import: ${result.error}`)
+    }
+  }
+
+  async function deleteOpenAPISpec(id: string): Promise<void> {
+    const deleted = await window.steal.deleteOpenAPISpec(id)
+    if (deleted) {
+      setMessage('OpenAPI spec deleted.')
+      const specs = await window.steal.listOpenAPISpecs()
+      setOpenAPISpecs(specs)
+    }
+  }
+
   async function installCertificate(): Promise<void> {
     setCertificateInstalling(true)
     setMessage('')
@@ -1025,11 +1118,20 @@ export default function App(): JSX.Element {
     setSelectedDomains(next)
   }
 
+  function toggleAPITag(tag: string): void {
+    const next = new Set(selectedAPITags)
+    if (next.has(tag)) next.delete(tag)
+    else next.add(tag)
+    setSelectedAPITags(next)
+  }
+
   function clearFilters(): void {
     setQuery('')
     setAppBrowserOnly(false)
     setResourceFilter('all')
     setSelectedDomains(new Set())
+    setSelectedAPITags(new Set())
+    setSelectedAPISpecs(new Set())
     setRegexQuery('')
     setMethodFilter('all')
     setEndpointPrefixesFromText('')
@@ -1589,6 +1691,26 @@ export default function App(): JSX.Element {
                         {availableDomains.length === 0 && <div className="empty-state compact">No domains yet.</div>}
                       </div>
                     </div>
+                    {openAPISpecs.length > 0 && availableAPITags.length > 0 && (
+                      <div className="filter-panel-section domain-section">
+                        <div className="filter-panel-heading">
+                          <span>API Tags</span>
+                          <strong>{availableAPITags.length}</strong>
+                        </div>
+                        <div className="domain-list">
+                          {availableAPITags.map(({ tag, count }) => (
+                            <button
+                              key={tag}
+                              className={selectedAPITags.has(tag) ? 'domain-filter active' : 'domain-filter'}
+                              onClick={() => toggleAPITag(tag)}
+                            >
+                              <span>{tag}</span>
+                              <strong>{count}</strong>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </aside>
                 )}
                 <div
@@ -1613,11 +1735,12 @@ export default function App(): JSX.Element {
                           <img className="capture-favicon" src={faviconUrl(capture.url)} alt="" loading="lazy" />
                           <span className="url-cell" title={capture.url}>
                             {(() => {
-                              const display = captureListDisplay(capture, endpointPrefixes, displayReplacements)
+                              const display = captureListDisplay(capture, endpointPrefixes, displayReplacements, openAPISpecs, selectedAPISpecs)
                               return (
                                 <>
                                   <span className="url-cell-primary">{highlightText(display.primary, rowSearchTokens)}</span>
                                   {display.secondary && <span className="url-cell-secondary">{highlightText(display.secondary, rowSearchTokens)}</span>}
+                                  {display.apiDescription && <span className="url-cell-description">{display.apiDescription}</span>}
                                 </>
                               )
                             })()}
@@ -1653,6 +1776,13 @@ export default function App(): JSX.Element {
                   {detailTabsForCapture(selected).map((item) => (
                     <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item}</button>
                   ))}
+                  {(() => {
+                    const apiMatch = matchEndpointToCapture(selected, openAPISpecs)
+                    if (!apiMatch) return null
+                    return (
+                      <button className={tab === 'api' ? 'active' : ''} onClick={() => setTab('api')}>api</button>
+                    )
+                  })()}
                   <label className="detail-search">
                     <Search size={14} />
                     <input
@@ -1695,6 +1825,101 @@ export default function App(): JSX.Element {
                 {tab === 'messages' && (
                   <WebSocketMessagesViewer messages={selected.webSocketMessages || []} searchQuery={detailSearch} />
                 )}
+                {tab === 'api' && (() => {
+                  const apiMatch = matchEndpointToCapture(selected, openAPISpecs)
+                  if (!apiMatch) return <div className="empty-state">No matching OpenAPI endpoint.</div>
+                  const { endpoint } = apiMatch
+                  const pathParams = endpoint.parameters?.filter((p) => p.in === 'path') ?? []
+                  const queryParams = endpoint.parameters?.filter((p) => p.in === 'query') ?? []
+                  const headerParams = endpoint.parameters?.filter((p) => p.in === 'header') ?? []
+                  return (
+                    <div className="api-detail-panel">
+                      <div className="api-detail-header">
+                        <span className={`method ${endpoint.method.toLowerCase()}`}>{endpoint.method}</span>
+                        <span className="api-detail-path">{endpoint.path}</span>
+                      </div>
+                      {endpoint.summary && <div className="api-detail-summary">{endpoint.summary}</div>}
+                      {endpoint.description && <div className="api-detail-description">{endpoint.description}</div>}
+                      {endpoint.tag && <div className="api-detail-tag">Tag: {endpoint.tag}</div>}
+                      {endpoint.deprecated && <div className="api-detail-deprecated">Deprecated</div>}
+                      {pathParams.length > 0 && (
+                        <div className="api-detail-section">
+                          <strong>Path Parameters</strong>
+                          {pathParams.map((p) => (
+                            <div key={p.name} className="api-param-row">
+                              <span className="api-param-name">{p.name}</span>
+                              <span className="api-param-type">{p.schema?.type || 'string'}</span>
+                              {p.required && <span className="api-param-required">required</span>}
+                              {p.description && <span className="api-param-desc">{p.description}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {queryParams.length > 0 && (
+                        <div className="api-detail-section">
+                          <strong>Query Parameters</strong>
+                          {queryParams.map((p) => (
+                            <div key={p.name} className="api-param-row">
+                              <span className="api-param-name">{p.name}</span>
+                              <span className="api-param-type">{p.schema?.type || 'string'}</span>
+                              {p.required && <span className="api-param-required">required</span>}
+                              {p.schema?.enum && <span className="api-param-enum">enum: {p.schema.enum.join(', ')}</span>}
+                              {p.description && <span className="api-param-desc">{p.description}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {headerParams.length > 0 && (
+                        <div className="api-detail-section">
+                          <strong>Header Parameters</strong>
+                          {headerParams.map((p) => (
+                            <div key={p.name} className="api-param-row">
+                              <span className="api-param-name">{p.name}</span>
+                              <span className="api-param-type">{p.schema?.type || 'string'}</span>
+                              {p.required && <span className="api-param-required">required</span>}
+                              {p.description && <span className="api-param-desc">{p.description}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {endpoint.requestBody && (
+                        <div className="api-detail-section">
+                          <strong>Request Body{endpoint.requestBody.contentType ? ` (${endpoint.requestBody.contentType})` : ''}</strong>
+                          {endpoint.requestBody.description && <div className="api-param-desc">{endpoint.requestBody.description}</div>}
+                          {endpoint.requestBody.example != null && (
+                            <pre className="api-body-example">{typeof endpoint.requestBody.example === 'string' ? endpoint.requestBody.example : JSON.stringify(endpoint.requestBody.example, null, 2)}</pre>
+                          )}
+                          {endpoint.requestBody.schema && !endpoint.requestBody.example && (
+                            <pre className="api-body-schema">{JSON.stringify(endpoint.requestBody.schema, null, 2)}</pre>
+                          )}
+                        </div>
+                      )}
+                      <button className="api-test-btn" onClick={() => {
+                        const spec = openAPISpecs.find((s) => s.id === apiMatch.specId)
+                        const baseUrl = spec?.baseUrl || ''
+                        let url = baseUrl ? `${baseUrl}${endpoint.path}` : selected.url
+                        const extractedQueryParams = queryParams.map((p) => ({
+                          key: p.name,
+                          value: p.schema?.example ?? p.schema?.default ?? ''
+                        }))
+                        setTestRequest({ method: endpoint.method, url, headers: {}, body: endpoint.requestBody?.example ? (typeof endpoint.requestBody.example === 'string' ? endpoint.requestBody.example : JSON.stringify(endpoint.requestBody.example, null, 2)) : '' })
+                        if (extractedQueryParams.length > 0) {
+                          setTestQueryRows(extractedQueryParams.map((p) => ({ id: crypto.randomUUID(), key: p.key, value: p.value, enabled: true })))
+                        } else {
+                          setTestQueryRows([])
+                        }
+                        if (endpoint.requestBody?.contentType?.includes('json')) {
+                          setTestBodyMode('json')
+                        } else {
+                          setTestBodyMode('raw')
+                        }
+                        setActiveMode('collection')
+                      }}>
+                        <Send size={14} /> Generate Test Request
+                      </button>
+                    </div>
+                  )
+                })()}
               </>
             ) : (
               <div className="empty-state">Open a URL or configure another app to use the local proxy.</div>
@@ -2012,6 +2237,9 @@ export default function App(): JSX.Element {
             <button className={settingsCategory === 'plugins' ? 'settings-category active' : 'settings-category'} onClick={() => setSettingsCategory('plugins')}>
               <strong>Plugins</strong>
             </button>
+            <button className={settingsCategory === 'openapi' ? 'settings-category active' : 'settings-category'} onClick={() => setSettingsCategory('openapi')}>
+              <strong>OpenAPI</strong>
+            </button>
           </aside>
 
           <section className="settings-page">
@@ -2185,6 +2413,48 @@ export default function App(): JSX.Element {
                 )}
               </>
             )}
+            
+            {settingsCategory === 'openapi' && (
+              <>
+                <div className="settings-page-title">
+                  <strong>OpenAPI</strong>
+                  <span>Import OpenAPI specifications to enhance capture filtering and display.</span>
+                </div>
+                
+                <div className="setting-card">
+                  <div>
+                    <strong>Import OpenAPI Specification</strong>
+                    <span>Import openapi.json or openapi.yaml files to enable API tag filtering and endpoint descriptions.</span>
+                  </div>
+                  <button className="primary-action" onClick={() => void importOpenAPISpec()}>
+                    <FileUp size={16} />
+                    Import
+                  </button>
+                </div>
+                
+                {openAPISpecs.length > 0 && (
+                  <>
+                    <div className="settings-page-title" style={{ marginTop: '24px' }}>
+                      <strong>Loaded Specifications</strong>
+                      <span>{openAPISpecs.length} spec{openAPISpecs.length !== 1 ? 's' : ''} loaded</span>
+                    </div>
+                    
+                    {openAPISpecs.map((spec) => (
+                      <div key={spec.id} className="setting-card">
+                        <div>
+                          <strong>{spec.name}</strong>
+                          <span>v{spec.version} - {spec.endpoints.length} endpoints, {spec.tags.length} tags</span>
+                          {spec.description && <code>{spec.description}</code>}
+                        </div>
+                        <button onClick={() => void deleteOpenAPISpec(spec.id)}>
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
           </section>
         </section>
       )}
@@ -2219,6 +2489,14 @@ export default function App(): JSX.Element {
                 >
                   <strong>Network</strong>
                 </button>
+                {openAPISpecs.length > 0 && (
+                  <button
+                    className={detailFilterSection === 'api' ? 'settings-category active' : 'settings-category'}
+                    onClick={() => setDetailFilterSection('api')}
+                  >
+                    <strong>API</strong>
+                  </button>
+                )}
               </aside>
               <div className="detail-filter-page">
                 {detailFilterSection === 'search' && (
@@ -2312,6 +2590,46 @@ export default function App(): JSX.Element {
                         inputMode="numeric"
                         onChange={(event) => setMaxDurationFilter(event.target.value)}
                       />
+                    </div>
+                  </>
+                )}
+                {detailFilterSection === 'api' && (
+                  <>
+                    <div className="collection-settings-page-title">
+                      <strong>API Specs</strong>
+                      <span>Enable imported OpenAPI specs to show API names in capture list.</span>
+                    </div>
+                    <div className="api-specs-list">
+                      {openAPISpecs.map((spec) => (
+                        <label key={spec.id} className="api-spec-item">
+                          <input
+                            type="checkbox"
+                            checked={selectedAPISpecs.has(spec.id)}
+                            onChange={() => {
+                              setSelectedAPISpecs((current) => {
+                                const next = new Set(current)
+                                if (next.has(spec.id)) {
+                                  next.delete(spec.id)
+                                } else {
+                                  next.add(spec.id)
+                                }
+                                return next
+                              })
+                            }}
+                          />
+                          <div className="api-spec-info">
+                            <span className="api-spec-name" title={spec.name}>{spec.name}</span>
+                            <span className="api-spec-meta">v{spec.version} · {spec.endpoints.length} endpoints</span>
+                            {spec.description && <span className="api-spec-description" title={spec.description}>{spec.description}</span>}
+                          </div>
+                        </label>
+                      ))}
+                      {openAPISpecs.length === 0 && (
+                        <div className="api-specs-empty">
+                          <span>No OpenAPI specs imported.</span>
+                          <span>Import from Settings → OpenAPI</span>
+                        </div>
+                      )}
                     </div>
                   </>
                 )}
@@ -3625,8 +3943,17 @@ function captureListLabel(capture: CapturedExchange, endpointPrefixes: string[])
 function captureListDisplay(
   capture: CapturedExchange,
   endpointPrefixes: string[],
-  displayReplacements: CaptureReplacementRule[]
-): { primary: string; secondary?: string } {
+  displayReplacements: CaptureReplacementRule[],
+  openAPISpecs: OpenAPISpec[] = [],
+  selectedAPISpecs: Set<string> = new Set()
+): { primary: string; secondary?: string; apiDescription?: string } {
+  const activeSpecs = openAPISpecs.filter((spec) => selectedAPISpecs.size === 0 || selectedAPISpecs.has(spec.id))
+  const match = matchEndpointToCapture(capture, activeSpecs)
+  if (match?.endpoint.summary) {
+    const primary = match.endpoint.summary
+    const secondary = captureListLabel(capture, endpointPrefixes)
+    return { primary, secondary, apiDescription: match.endpoint.description }
+  }
   const original = captureListLabel(capture, endpointPrefixes)
   const primary = applyCaptureReplacementRules(original, displayReplacements)
   return primary !== original

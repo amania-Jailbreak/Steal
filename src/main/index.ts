@@ -12,6 +12,8 @@ import { capturesFromHar, capturesToHar } from './har'
 import { disableStealSystemProxy, enableSystemProxy, installTrustedCertificate, isCertificateTrusted, restoreSystemProxy } from './system-proxy'
 import { PluginLoader } from './plugin-loader'
 import { PluginAPI } from './plugin-api'
+import { OpenAPIStore } from './openapi-store'
+import { matchEndpointToCapture, getTagsFromCaptures } from '../shared/openapi-types'
 import { replayRequest } from './replay'
 import { McpBridgeServer } from './mcp-bridge'
 import { resolveStealBridgeFilePath } from './app-data'
@@ -25,6 +27,7 @@ let settingsStore: SettingsStore
 let themeStore: ThemeStore
 let workspaceStore: WorkspaceStore
 let pluginLoader: PluginLoader
+let openAPIStore: OpenAPIStore
 let certificatePromptInFlight = false
 let tray: Tray | undefined
 let trayProxyTransitioning = false
@@ -89,6 +92,7 @@ app.whenReady().then(async () => {
   settingsStore = new SettingsStore(join(dataDir, 'settings.json'))
   themeStore = new ThemeStore(join(dataDir, 'theme.json'))
   workspaceStore = new WorkspaceStore(join(dataDir, 'workspaces'))
+  openAPIStore = new OpenAPIStore()
   const settings = await settingsStore.get()
 
   const pluginAPI = new PluginAPI(proxyService)
@@ -389,6 +393,50 @@ function registerIpc(): void {
       processed = plugin.processors.onRequest(processed)
     }
     return processed
+  })
+  
+  ipcMain.handle('openapi:list', () => {
+    return openAPIStore.listSpecs()
+  })
+  
+  ipcMain.handle('openapi:import', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: 'Import OpenAPI Specification',
+      properties: ['openFile'],
+      filters: [
+        { name: 'OpenAPI', extensions: ['json', 'yaml', 'yml'] }
+      ]
+    })
+    
+    if (canceled || filePaths.length === 0) {
+      return { success: false, error: 'No file selected' }
+    }
+    
+    try {
+      const content = await readFile(filePaths[0], 'utf-8')
+      const filename = filePaths[0].split('/').pop() || 'openapi.json'
+      return openAPIStore.importSpec(content, filename)
+    } catch (error) {
+      return { 
+        success: false, 
+        error: error instanceof Error ? error.message : 'Failed to read file' 
+      }
+    }
+  })
+  
+  ipcMain.handle('openapi:delete', (_event, id: string) => {
+    return openAPIStore.deleteSpec(id)
+  })
+  
+  ipcMain.handle('openapi:match', (_event, capture: CapturedExchange) => {
+    const specs = openAPIStore.listSpecs()
+    return matchEndpointToCapture(capture, specs)
+  })
+  
+  ipcMain.handle('openapi:tags', (_event, captures: CapturedExchange[]) => {
+    const specs = openAPIStore.listSpecs()
+    const tagCounts = getTagsFromCaptures(captures, specs)
+    return Array.from(tagCounts.entries()).map(([name, count]) => ({ name, count }))
   })
 }
 

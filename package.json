@@ -9,7 +9,40 @@
     "build": "npm run typecheck && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "mcp": "npm run build && node out/main/mcp.js"
+    "mcp": "npm run build && node out/main/mcp.js",
+    "release": "npm run build && electron-builder --mac --win"
+  },
+  "build": {
+    "appId": "com.steelapp.steal",
+    "productName": "Steal",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64"]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "identity": null
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    }
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -17,16 +50,19 @@
     "electron-vite": "^5.0.0",
     "highlight.js": "^11.11.1",
     "http-mitm-proxy": "^1.1.0",
+    "js-yaml": "^4.1.1",
     "lucide-react": "^1.14.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "electron": "^39.8.5",
+    "electron-builder": "^26.8.1",
     "typescript": "^6.0.3",
     "vite": "^7.2.7"
   }

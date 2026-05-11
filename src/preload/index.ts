@@ -82,7 +82,15 @@ const api: AppApi = {
     ipcRenderer.invoke('plugins:run-filter', pluginName, filterName, captures),
   runPluginExport: (pluginName: string, exporterName: string, captures: CapturedExchange[]) =>
     ipcRenderer.invoke('plugins:run-export', pluginName, exporterName, captures),
-  processRequest: (request: ReplayRequest) => ipcRenderer.invoke('plugins:process-request', request)
+  processRequest: (request: ReplayRequest) => ipcRenderer.invoke('plugins:process-request', request),
+  
+  listOpenAPISpecs: () => ipcRenderer.invoke('openapi:list'),
+  importOpenAPISpec: () => ipcRenderer.invoke('openapi:import'),
+  deleteOpenAPISpec: (id: string) => ipcRenderer.invoke('openapi:delete', id),
+  matchOpenAPIEndpoint: (capture: CapturedExchange) => 
+    ipcRenderer.invoke('openapi:match', capture),
+  getOpenAPITags: (captures: CapturedExchange[]) => 
+    ipcRenderer.invoke('openapi:tags', captures)
 }
 
 contextBridge.exposeInMainWorld('steal', api)

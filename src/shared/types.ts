@@ -257,4 +257,10 @@ export interface AppApi {
   runPluginFilter: (pluginName: string, filterName: string, captures: CapturedExchange[]) => Promise<CapturedExchange[]>
   runPluginExport: (pluginName: string, exporterName: string, captures: CapturedExchange[]) => Promise<string | undefined>
   processRequest: (request: ReplayRequest) => Promise<ReplayRequest>
+  
+  listOpenAPISpecs: () => Promise<Array<{ id: string; name: string; version: string; description?: string; tags: Array<{ name: string; endpointCount: number }>; endpoints: Array<{ path: string; method: string; tag?: string; summary?: string }>; importedAt: string }>>
+  importOpenAPISpec: () => Promise<{ success: boolean; spec?: any; error?: string }>
+  deleteOpenAPISpec: (id: string) => Promise<boolean>
+  matchOpenAPIEndpoint: (capture: CapturedExchange) => Promise<{ specId: string; specName: string; endpoint: { path: string; method: string; tag?: string; summary?: string; description?: string } } | undefined>
+  getOpenAPITags: (captures: CapturedExchange[]) => Promise<Array<{ name: string; count: number }>>
 }
